@@ -754,18 +754,20 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
             log::info!("=== {} complete: {} servers in {:.0}s ===", cycle_label, total_found, cycle_duration.as_secs_f64());
         }
 
-        if let Err(e) = db.record_cycle(cycle_name, global_cycle, scanned_ips, total_found, &cycle_started_at, cycle_secs) {
-            log::error!("record_cycle: {}", e);
+        // Only record cycle history when it actually completed
+        if !was_cancelled {
+            if let Err(e) = db.record_cycle(cycle_name, global_cycle, scanned_ips, total_found, &cycle_started_at, cycle_secs) {
+                log::error!("record_cycle: {}", e);
+            }
         }
         // Fallback lifetime counter — survives DB failures
         save_lifetime(scanned_ips);
-        // Only clear checkpoint if cycle actually completed all ranges
         if !was_cancelled {
             let _ = db.clear_checkpoint();
         } else {
             // Save final position on cancel
             let _ = db.save_checkpoint(cycle_name, global_cycle, 0, scanned_ips, total_found);
-            log::info!("Checkpoint kept at {} IPs (cycle cancelled)", scanned_ips);
+            log::info!("Checkpoint kept at {} IPs (cycle paused)", scanned_ips);
         }
 
         {
