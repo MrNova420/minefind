@@ -682,15 +682,25 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
         let cycle_duration = cycle_start.elapsed();
         let total_found = found_count.load(Ordering::SeqCst);
         let cycle_secs = cycle_duration.as_secs();
+        let was_cancelled = cancel.load(Ordering::SeqCst);
 
-        log::info!("=== {} complete: {} servers in {:.0}s ===", cycle_label, total_found, cycle_duration.as_secs_f64());
+        if was_cancelled {
+            log::info!("=== {} cancelled: {} servers in {:.0}s ({} IPs scanned) ===", cycle_label, total_found, cycle_duration.as_secs_f64(), scanned_ips);
+        } else {
+            log::info!("=== {} complete: {} servers in {:.0}s ===", cycle_label, total_found, cycle_duration.as_secs_f64());
+        }
 
         if let Err(e) = db.record_cycle(cycle_name, global_cycle, scanned_ips, total_found, &cycle_started_at, cycle_secs) {
             log::error!("record_cycle: {}", e);
         }
         // Fallback lifetime counter — survives DB failures
         save_lifetime(scanned_ips);
-        let _ = db.clear_checkpoint();
+        // Only clear checkpoint if cycle actually completed all ranges
+        if !cancel.load(Ordering::SeqCst) {
+            let _ = db.clear_checkpoint();
+        } else {
+            log::info!("Checkpoint kept at {} IPs (cycle cancelled)", scanned_ips);
+        }
 
         {
             let mut p = ctx.scan_progress.lock().unwrap();
