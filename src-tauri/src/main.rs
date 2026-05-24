@@ -100,7 +100,7 @@ impl CycleType {
     }
 }
 
-const SAVE_CHECKPOINT_EVERY: u64 = 100000;
+const SAVE_CHECKPOINT_EVERY: u64 = 50000;
 const DENSITY_EMPTY_SKIP_AFTER: i64 = 3;
 
 fn detect_or_start_proxy() -> Option<String> {
@@ -621,6 +621,9 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
         let mut handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
         let mut last_checkpoint_at: u64 = scanned_ips;
 
+        // Save checkpoint at start so resume always works
+        let _ = db.save_checkpoint(cycle_name, global_cycle, 0, scanned_ips, found_count.load(Ordering::SeqCst));
+
         for range in &ranges {
             if cancel.load(Ordering::SeqCst) { break; }
 
@@ -757,9 +760,11 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
         // Fallback lifetime counter — survives DB failures
         save_lifetime(scanned_ips);
         // Only clear checkpoint if cycle actually completed all ranges
-        if !cancel.load(Ordering::SeqCst) {
+        if !was_cancelled {
             let _ = db.clear_checkpoint();
         } else {
+            // Save final position on cancel
+            let _ = db.save_checkpoint(cycle_name, global_cycle, 0, scanned_ips, total_found);
             log::info!("Checkpoint kept at {} IPs (cycle cancelled)", scanned_ips);
         }
 
