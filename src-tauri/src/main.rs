@@ -539,6 +539,15 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
         let cycle_start = Instant::now();
         let cycle_started_at = chrono::Utc::now().to_rfc3339();
         let found_count = Arc::new(AtomicU64::new(0));
+        let known_set: Arc<std::sync::Mutex<std::collections::HashSet<String>>> = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        // Pre-load existing servers from DB so we don't double-count
+        {
+            let servers = db.get_all_servers().unwrap_or_default();
+            let mut set = known_set.lock().unwrap();
+            for s in &servers {
+                set.insert(format!("{}:{}", s.ip, s.port));
+            }
+        }
 
         let probe_wl = ctx.scan_probe_wl.load(Ordering::SeqCst);
         let proxy = ctx.scan_proxy.lock().unwrap().clone();
@@ -647,6 +656,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                 let do_probe = probe_wl;
                 let task_ports = ports.clone();
                 let task_tx = db_tx.clone();
+                let task_known = known_set.clone();
 
                 handles.push(tokio::spawn(async move {
                     let _held = permit;
@@ -662,8 +672,15 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                             scanner::ping::ping_server(&a_str, port).await
                         };
                         if let Ok(mut info) = r {
-                            found_this_ip += 1;
-                            log::info!("Found server: {}:{} v={}", info.ip, port, info.version);
+                            let key = format!("{}:{}", info.ip, info.port);
+                            let is_new = {
+                                let mut set = task_known.lock().unwrap();
+                                if set.contains(&key) { false } else { set.insert(key.clone()); true }
+                            };
+                            if is_new {
+                                found_this_ip += 1;
+                            }
+                            log::info!("Found server: {}:{} v={} {}", info.ip, port, info.version, if is_new { "(NEW)" } else { "(known)" });
                             if do_probe {
                                 info.whitelisted = scanner::probe::check_whitelist(&info, px).await;
                             }
