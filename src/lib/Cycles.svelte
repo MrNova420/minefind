@@ -25,18 +25,19 @@
     return labels[type] || type || "—";
   }
 
+  const allTypes = ["ipv4_fast", "ipv6_targeted", "ipv4_deep", "ipv6_deep"];
+
   let typeSummary = $derived(
-    (cycleData.history || []).reduce((acc, c) => {
-      const t = c.cycle_type || "unknown";
-      if (!acc[t]) acc[t] = { type: t, count: 0, scanned: 0, found: 0, last: null };
-      acc[t].count++;
-      acc[t].scanned += c.targets_scanned || 0;
-      acc[t].found += c.servers_found || 0;
-      if (!acc[t].last || (c.finished_at && c.finished_at > acc[t].last)) {
-        acc[t].last = c.finished_at;
-      }
-      return acc;
-    }, {})
+    allTypes.map(t => {
+      const matches = (cycleData.history || []).filter(c => c.cycle_type === t);
+      return {
+        type: t,
+        count: matches.length,
+        scanned: matches.reduce((s, c) => s + (c.targets_scanned || 0), 0),
+        found: matches.reduce((s, c) => s + (c.servers_found || 0), 0),
+        last: matches.length ? matches.reduce((a, c) => (c.finished_at && c.finished_at > a) ? c.finished_at : a, "") : null,
+      };
+    })
   );
 </script>
 
@@ -70,7 +71,7 @@
     <div class="table-header type-header">
       <span>Cycle Type</span><span>Runs</span><span>Total Scanned</span><span>Total Found</span><span>Last Run</span><span></span>
     </div>
-    {#each Object.values(typeSummary) as t}
+    {#each typeSummary as t}
       <div class="table-row type-row">
         <span class="cycle-type">{cycleLabel(t.type)}</span>
         <span>{t.count}</span>
@@ -82,29 +83,29 @@
         </span>
       </div>
     {/each}
-    {#if Object.keys(typeSummary).length === 0}
-      <div class="empty">No cycles completed yet. Start a scan to begin.</div>
-    {/if}
   </div>
 
   <h3 style="margin-top: 24px">Full History</h3>
   <div class="table-wrap">
-    <div class="table-header">
-      <span>#</span><span>Type</span><span>Scanned</span><span>Found</span><span>Started</span><span>Finished</span>
+    <div class="table-header hist-header">
+      <span>#</span><span>Type</span><span>Scanned</span><span>Found</span><span>Started</span><span>Finished</span><span></span>
     </div>
     {#if cycleData.history?.length > 0}
       {#each cycleData.history as c}
-        <div class="table-row">
+        <div class="table-row hist-row">
           <span class="cycle-num">{c.cycle}</span>
           <span class="cycle-type">{cycleLabel(c.cycle_type)}</span>
           <span class="mono">{formatNum(c.targets_scanned)}</span>
           <span class="found">{c.servers_found ?? 0}</span>
           <span class="small">{timeAgo(c.started_at)}</span>
           <span class="small">{timeAgo(c.finished_at)}</span>
+          <span>
+            <button class="continue-btn" onclick={() => onStartCycle(c.cycle_type)}>Continue</button>
+          </span>
         </div>
       {/each}
     {:else}
-      <div class="empty">No cycles completed yet.</div>
+      <div class="empty">No cycles completed yet. Start a scan to begin.</div>
     {/if}
   </div>
 </div>
@@ -172,6 +173,8 @@
 
   .type-header { grid-template-columns: 140px 50px 120px 80px 100px 90px; }
   .type-row { grid-template-columns: 140px 50px 120px 80px 100px 90px; }
+  .hist-header { grid-template-columns: 50px 130px 120px 80px 100px 1fr 90px; }
+  .hist-row { grid-template-columns: 50px 130px 120px 80px 100px 1fr 90px; }
 
   .cycle-num { font-weight: 600; color: var(--accent2); }
   .cycle-type { font-size: 11px; }

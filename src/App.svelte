@@ -171,7 +171,7 @@
   async function toggleScan() {
     if (scanRunning) {
       await api("/scan/cancel", { method: "POST" });
-      // Wait for backend to actually stop
+      // Wait for backend to actually stop (up to 30s)
       while (scanRunning) {
         await new Promise((r) => setTimeout(r, 500));
         const st = await api("/scan/status");
@@ -190,8 +190,8 @@
     const st = await api("/scan/status");
     if (st?.running) {
       await api("/scan/cancel", { method: "POST" });
-      // Wait for stop
-      for (let i = 0; i < 20; i++) {
+      // Wait for stop (up to 30s)
+      for (let i = 0; i < 60; i++) {
         await new Promise((r) => setTimeout(r, 500));
         const s = await api("/scan/status");
         if (!s?.running) break;
