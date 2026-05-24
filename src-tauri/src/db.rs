@@ -199,7 +199,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT rowid, started_at, finished_at, targets_scanned, servers_found, cycle_type
-             FROM scan_history ORDER BY rowid DESC LIMIT 20"
+             FROM scan_history ORDER BY rowid DESC LIMIT 50"
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(serde_json::json!({
@@ -319,6 +319,16 @@ impl Database {
             if let Ok(p) = r { result.push(p); }
         }
         Ok(result)
+    }
+
+    pub fn reset_scanner_memory(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch(
+            "DELETE FROM scan_history;
+             DELETE FROM range_density;
+             DELETE FROM scanner_checkpoint;"
+        )?;
+        Ok(())
     }
 
     pub fn dedup_check(&self) -> Result<serde_json::Value> {

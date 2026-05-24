@@ -157,6 +157,17 @@
     await api(`/settings/rescan?on=${newVal ? "1" : "0"}`, { method: "POST" });
   }
 
+  async function resetScanner() {
+    if (!confirm("Reset all scanner memory? Keeps your servers, clears all cycle history and checkpoints.")) return;
+    const res = await api("/scan/reset", { method: "POST" });
+    if (res?.ok) {
+      cycleData = { summary: {}, history: [], checkpoint: null };
+      cycleStats = { cycles: 0, total_servers_found: 0, total_targets_scanned: 0, actual_servers: 0 };
+    } else {
+      alert(res?.error || "Reset failed");
+    }
+  }
+
   async function toggleScan() {
     if (scanRunning) {
       await api("/scan/cancel", { method: "POST" });
@@ -192,6 +203,7 @@
       concurrency: String(concurrency),
     });
     if (cycleType) params.set("cycle_type", cycleType);
+    else params.set("fresh", "1");
     if (forceProxy && proxyAddr.trim()) params.set("proxy", proxyAddr.trim());
     const res = await api(`/scan/start?${params}`, { method: "POST" });
     if (res?.ok) {
@@ -337,7 +349,7 @@
         class:scanning={scanRunning}
         onclick={toggleScan}
       >
-        {scanRunning ? "Stop" : "Scan"}
+        {scanRunning ? "Stop" : (cycleData?.checkpoint ? "Resume" : "Start Fresh")}
       </button>
     </div>
   </header>
@@ -435,6 +447,13 @@
         <label class="toggle">
           <input type="checkbox" checked={rescanAll} onchange={toggleRescan} disabled={scanRunning} />
         </label>
+      </div>
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Reset Scanner Memory</span>
+          <span class="setting-desc">Clears cycle history, checkpoints, range tracking. Keeps your servers.</span>
+        </div>
+        <button class="reset-btn" onclick={resetScanner} disabled={scanRunning}>Reset</button>
       </div>
       {#if forceProxy && !proxyAvailable}
         <div class="warning">
@@ -571,6 +590,13 @@
     background: var(--bg3); color: var(--text);
     padding: 4px 10px; font-size: 11px;
   }
+  .reset-btn {
+    background: rgba(248,113,113,0.12); color: var(--red);
+    padding: 5px 12px; font-size: 11px; border: 1px solid rgba(248,113,113,0.25);
+    border-radius: 4px; cursor: pointer;
+  }
+  .reset-btn:hover { background: rgba(248,113,113,0.2); }
+  .reset-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
   .toggle input { accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer; }
 

@@ -45,6 +45,7 @@ struct AppCtx {
     wl_reverify_total: AtomicU64,
     wl_reverify_done: AtomicU64,
     rescan_all: AtomicBool,
+    start_fresh: AtomicBool,
 }
 
 #[derive(Clone, PartialEq)]
@@ -153,6 +154,7 @@ async fn main() {
         wl_reverify_total: AtomicU64::new(0),
         wl_reverify_done: AtomicU64::new(0),
         rescan_all: AtomicBool::new(false),
+        start_fresh: AtomicBool::new(false),
     });
 
     log::info!("Direct connections only. Enable proxy (Tor) in Settings for privacy.");
@@ -189,6 +191,7 @@ async fn main() {
         .route("/api/scan/status", get(api_scan_status))
         .route("/api/scan/cycles", get(api_scan_cycles))
         .route("/api/scan/concurrency", post(api_set_concurrency))
+        .route("/api/scan/reset", post(api_scan_reset))
         .route("/api/proxy/status", get(api_proxy_status))
         .route("/api/proxy/detect", post(api_proxy_detect))
         .route("/api/cache/clear", post(api_cache_clear))
@@ -455,7 +458,9 @@ async fn api_scan_start(
     }
 
     let start_ct = params.get("cycle_type").filter(|s| !s.is_empty()).cloned();
+    let fresh_start = params.get("fresh").map(|v| v == "1").unwrap_or(false);
     *ctx.start_cycle_type.lock().unwrap() = start_ct;
+    ctx.start_fresh.store(fresh_start, Ordering::SeqCst);
 
     ctx.scan_probe_wl.store(probe_wl, Ordering::SeqCst);
     ctx.scan_force_proxy.store(force_proxy, Ordering::SeqCst);
@@ -528,7 +533,14 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
     let mut global_cycle: u64 = 0;
 
     // Check for resume
-    let mut resume_from = db.load_checkpoint().ok().flatten();
+    let mut resume_from: Option<db::Checkpoint> = {
+        if ctx.start_fresh.swap(false, Ordering::SeqCst) {
+            log::info!("Fresh start — ignoring any checkpoint");
+            None
+        } else {
+            db.load_checkpoint().ok().flatten()
+        }
+    };
 
     while !cancel.load(Ordering::SeqCst) {
         let ct = cycle_order[cycle_order_idx].clone();
@@ -909,6 +921,26 @@ async fn api_set_concurrency(
     ctx.scan_concurrency.store(n, Ordering::SeqCst);
     log::info!("Scan concurrency set to {}", n);
     Json(serde_json::json!({"concurrency": n}))
+}
+
+async fn api_scan_reset(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
+    if ctx.scan_running.load(Ordering::SeqCst) {
+        return Json(serde_json::json!({"error": "cannot reset while scanning"}));
+    }
+    match get_db(&ctx) {
+        Ok(g) => {
+            match g.as_ref().unwrap().reset_scanner_memory() {
+                Ok(_) => {
+                    // Also clear lifetime counter file
+                    let _ = std::fs::write(lifetime_counter_path(), "0");
+                    log::info!("Scanner memory reset — servers kept, cycles/checkpoints cleared");
+                    Json(serde_json::json!({"ok": true}))
+                }
+                Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+            }
+        }
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
 }
 
 async fn api_scan_cycles(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
