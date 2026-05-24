@@ -485,9 +485,11 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
     });
 
     let cycle_order = CycleType::cycle_order();
+    let mut pinned_cycle: bool = false;
     let mut cycle_order_idx: usize = {
         let start_ct = ctx.start_cycle_type.lock().unwrap().take();
         if let Some(ref sct) = start_ct {
+            pinned_cycle = true;
             cycle_order.iter().position(|ct| ct.name() == sct.as_str()).unwrap_or(0)
         } else {
             0
@@ -713,8 +715,10 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
         }
         *ctx.stats_cache.lock().unwrap() = None;
 
-        // Advance to next cycle type
-        cycle_order_idx = (cycle_order_idx + 1) % cycle_order.len();
+        // Advance to next cycle type (only in auto-rotation mode)
+        if !pinned_cycle {
+            cycle_order_idx = (cycle_order_idx + 1) % cycle_order.len();
+        }
 
         // Between cycles: poll cancel every 5s for 30s
         if !cancel.load(Ordering::SeqCst) {
