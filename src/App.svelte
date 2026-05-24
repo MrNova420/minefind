@@ -142,6 +142,13 @@
   async function toggleForceProxy() {
     const newVal = !forceProxy;
     forceProxy = newVal;
+    await api(`/settings/force-proxy?on=${newVal ? "1" : "0"}`, { method: "POST" });
+  }
+
+  async function toggleWLProbe() {
+    const newVal = !probeWhitelist;
+    probeWhitelist = newVal;
+    await api(`/settings/probe-wl?on=${newVal ? "1" : "0"}`, { method: "POST" });
   }
 
   async function toggleRescan() {
@@ -386,7 +393,7 @@
           <span class="setting-desc">Detect whitelist status per server</span>
         </div>
         <label class="toggle">
-          <input type="checkbox" bind:checked={probeWhitelist} disabled={scanRunning} />
+          <input type="checkbox" checked={probeWhitelist} onchange={toggleWLProbe} disabled={scanRunning} />
         </label>
       </div>
       <div class="setting-row">

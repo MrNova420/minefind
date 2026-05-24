@@ -204,6 +204,8 @@ async fn main() {
         .route("/api/servers/dedup", post(api_dedup))
         .route("/api/settings/rescan", post(api_set_rescan))
         .route("/api/settings", get(api_get_settings))
+        .route("/api/settings/force-proxy", post(api_set_force_proxy))
+        .route("/api/settings/probe-wl", post(api_set_probe_wl))
         .layer(CorsLayer::permissive())
         .with_state(ctx);
 
@@ -355,6 +357,24 @@ async fn api_get_settings(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Va
         "probe_whitelist": ctx.scan_probe_wl.load(Ordering::SeqCst),
         "concurrency": ctx.scan_concurrency.load(Ordering::SeqCst),
     }))
+}
+
+async fn api_set_force_proxy(
+    State(ctx): State<Arc<AppCtx>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let on = params.get("on").map(|v| v == "1").unwrap_or(false);
+    ctx.scan_force_proxy.store(on, Ordering::SeqCst);
+    Json(serde_json::json!({"force_proxy": on}))
+}
+
+async fn api_set_probe_wl(
+    State(ctx): State<Arc<AppCtx>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let on = params.get("on").map(|v| v == "1").unwrap_or(true);
+    ctx.scan_probe_wl.store(on, Ordering::SeqCst);
+    Json(serde_json::json!({"probe_whitelist": on}))
 }
 
 async fn api_stats(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
