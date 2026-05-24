@@ -160,16 +160,31 @@
   async function toggleScan() {
     if (scanRunning) {
       await api("/scan/cancel", { method: "POST" });
-      scanRunning = false;
+      // Wait for backend to actually stop
+      while (scanRunning) {
+        await new Promise((r) => setTimeout(r, 500));
+        const st = await api("/scan/status");
+        if (st) {
+          if (!st.running) scanRunning = false;
+          progress = st;
+        }
+      }
     } else {
       await startCycle();
     }
   }
 
   async function startCycle(cycleType = null) {
-    if (scanRunning) {
+    // First check if backend says running
+    const st = await api("/scan/status");
+    if (st?.running) {
       await api("/scan/cancel", { method: "POST" });
-      scanRunning = false;
+      // Wait for stop
+      for (let i = 0; i < 20; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        const s = await api("/scan/status");
+        if (!s?.running) break;
+      }
     }
     const params = new URLSearchParams({
       probe_whitelist: probeWhitelist ? "1" : "0",

@@ -851,10 +851,10 @@ fn categorize_from_info(info: &scanner::ServerInfo) -> scanner::ServerCategory {
 
 async fn api_scan_cancel(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
     ctx.scan_cancel.store(true, Ordering::SeqCst);
-    ctx.scan_running.store(false, Ordering::SeqCst);
+    // Don't set scan_running=false — let scan_loop do it when it exits
     {
         let mut p = ctx.scan_progress.lock().unwrap();
-        p.status = "stopped".to_string();
+        p.status = "stopping".to_string();
     }
     Json(serde_json::json!({"ok":true}))
 }
