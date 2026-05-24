@@ -831,9 +831,25 @@ async fn api_set_concurrency(
 
 async fn api_scan_cycles(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
     match get_db(&ctx) {
-        Ok(g) => match g.as_ref().unwrap().get_cycle_summary() {
-            Ok(v) => Json(v),
-            Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+        Ok(g) => {
+            let db_ref = g.as_ref().unwrap();
+            let summary = db_ref.get_cycle_summary().unwrap_or(serde_json::json!({}));
+            let history = db_ref.get_cycle_history().unwrap_or_default();
+            let checkpoint = db_ref.load_checkpoint().ok().flatten();
+            let mut resp = serde_json::json!({
+                "summary": summary,
+                "history": history,
+            });
+            if let Some(cp) = checkpoint {
+                resp["checkpoint"] = serde_json::json!({
+                    "cycle_type": cp.cycle_type,
+                    "cycle_num": cp.cycle_num,
+                    "ip_u32": cp.ip_u32,
+                    "scanned_ips": cp.scanned_ips,
+                    "found_servers": cp.found_servers,
+                });
+            }
+            Json(resp)
         },
         Err(e) => Json(serde_json::json!({"error": e})),
     }

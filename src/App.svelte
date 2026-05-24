@@ -3,6 +3,7 @@
   import ServerList from "./lib/ServerList.svelte";
   import MapView from "./lib/Map.svelte";
   import Kitty from "./lib/Kitty.svelte";
+  import Cycles from "./lib/Cycles.svelte";
 
   let currentView = $state("dashboard");
   let stats = $state({});
@@ -24,6 +25,7 @@
   let kittyVerifyProgress = $state({ verify_total: 0, verify_done: 0, verify_found: 0 });
   let dbPushStatus = $state({ running: false, status: "" });
   let wlReverify = $state({ running: false, total: 0, done: 0 });
+  let cycleData = $state({ summary: {}, history: [], checkpoint: null });
 
   let lifetimeScanned = $derived(
     progress.lifetime_scanned || cycleStats.total_targets_scanned || 0
@@ -174,7 +176,10 @@
 
   async function pollCycleStats() {
     const cs = await api("/scan/cycles");
-    if (cs) cycleStats = cs;
+    if (cs) {
+      cycleStats = cs.summary || cs;
+      cycleData = cs;
+    }
   }
 
   async function pollScan() {
@@ -259,6 +264,13 @@
         onclick={() => { currentView = "kitty"; kittyRefresh(); }}
       >
         Kitty
+      </button>
+      <button
+        class="nav-btn"
+        class:active={currentView === "cycles"}
+        onclick={() => { currentView = "cycles"; pollCycleStats(); }}
+      >
+        Cycles
       </button>
     </nav>
     <div class="actions">
@@ -404,6 +416,8 @@
       <MapView {servers} />
     {:else if currentView === "kitty"}
       <Kitty servers={kittyServers} stats={kittyStats} verifyProgress={kittyVerifyProgress} onSync={kittySync} onVerify={kittyVerify} />
+    {:else if currentView === "cycles"}
+      <Cycles {cycleData} />
     {/if}
   </main>
 </div>
