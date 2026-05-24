@@ -21,6 +21,7 @@
   let kittyServers = $state([]);
   let kittyStats = $state({ total: 0, verified: 0, syncing: false, verifying: false });
   let kittyVerifyProgress = $state({ verify_total: 0, verify_done: 0, verify_found: 0 });
+  let dbPushStatus = $state({ running: false, status: "" });
 
   let lifetimeScanned = $derived(
     progress.lifetime_scanned || cycleStats.total_targets_scanned || 0
@@ -74,6 +75,30 @@
     const [list, st] = await Promise.all([api("/kitty/list"), api("/kitty/stats")]);
     if (list) kittyServers = list;
     if (st) kittyStats = st;
+  }
+
+  async function pushDb() {
+    const res = await api("/db/push", { method: "POST" });
+    if (res?.ok) {
+      dbPushStatus = { running: true, status: "starting..." };
+      pollPushStatus();
+    } else {
+      dbPushStatus = { running: false, status: res?.error || "Failed to start push" };
+    }
+  }
+
+  async function pollPushStatus() {
+    while (dbPushStatus.running) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const st = await api("/db/push/status");
+      if (st) {
+        dbPushStatus = { running: st.running || false, status: st.status || "" };
+        if (!st.running && st.status?.includes("pushed")) break;
+      }
+    }
+    if (!dbPushStatus.running && !dbPushStatus.status?.includes("pushed")) {
+      dbPushStatus = { running: false, status: dbPushStatus.status || "push completed" };
+    }
   }
 
   async function checkProxy() {
@@ -335,7 +360,7 @@
     {#if !dbReady}
       <div class="loading">Connecting...</div>
     {:else if currentView === "dashboard"}
-      <Dashboard {stats} {servers} {cycleStats} {progress} {lifetimeScanned} onRefresh={refreshAll} />
+      <Dashboard {stats} {servers} {cycleStats} {progress} {lifetimeScanned} {dbPushStatus} onRefresh={refreshAll} onPushDb={pushDb} />
     {:else if currentView === "servers"}
       <ServerList {servers} />
     {:else if currentView === "map"}

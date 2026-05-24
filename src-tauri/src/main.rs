@@ -38,6 +38,8 @@ struct AppCtx {
     scan_progress: std::sync::Mutex<ScanProgress>,
     stats_cache: std::sync::Mutex<Option<serde_json::Value>>,
     kitty_ctx: kitty::KittyCtx,
+    db_push_running: AtomicBool,
+    db_push_status: std::sync::Mutex<String>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -139,6 +141,8 @@ async fn main() {
         }),
         stats_cache: std::sync::Mutex::new(None),
         kitty_ctx: kitty::KittyCtx::new(),
+        db_push_running: AtomicBool::new(false),
+        db_push_status: std::sync::Mutex::new(String::new()),
     });
 
     log::info!("Direct connections only. Enable proxy (Tor) in Settings for privacy.");
@@ -183,6 +187,8 @@ async fn main() {
         .route("/api/kitty/list", get(kitty::api_kitty_list))
         .route("/api/kitty/stats", get(kitty::api_kitty_stats))
         .route("/api/kitty/status", get(kitty::api_kitty_status))
+        .route("/api/db/push", post(api_db_push))
+        .route("/api/db/push/status", get(api_db_push_status))
         .layer(CorsLayer::permissive())
         .with_state(ctx);
 
@@ -783,4 +789,137 @@ fn load_lifetime() -> u64 {
         .ok()
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(0)
+}
+
+const DB_REPO_URL: &str = "https://github.com/MrNova420/minefind-database.git";
+
+fn db_repo_cache_dir() -> std::path::PathBuf {
+    dirs_next::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("minefind")
+        .join("db-repo-cache")
+}
+
+async fn api_db_push(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
+    if ctx.db_push_running.load(Ordering::SeqCst) {
+        return Json(serde_json::json!({"error": "push already running"}));
+    }
+    ctx.db_push_running.store(true, Ordering::SeqCst);
+    *ctx.db_push_status.lock().unwrap() = "cloning...".into();
+
+    let ctx2 = ctx.clone();
+    tokio::spawn(async move {
+        let _ = run_db_push(&ctx2).await;
+        ctx2.db_push_running.store(false, Ordering::SeqCst);
+    });
+
+    Json(serde_json::json!({"ok": true, "message": "push started"}))
+}
+
+async fn api_db_push_status(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "running": ctx.db_push_running.load(Ordering::SeqCst),
+        "status": ctx.db_push_status.lock().unwrap().clone(),
+    }))
+}
+
+async fn run_db_push(ctx: &AppCtx) -> Result<(), String> {
+    let data_dir = dirs_next::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("minefind");
+    let cache = db_repo_cache_dir();
+    let servers_db = data_dir.join("servers.db");
+    let kitty_db = data_dir.join("kitty.db");
+
+    let set_status = |s: &str| { *ctx.db_push_status.lock().unwrap() = s.to_string(); };
+
+    // Clone or pull
+    if cache.join(".git").exists() {
+        set_status("pulling latest...");
+        let out = tokio::process::Command::new("git")
+            .args(["-C", cache.to_str().unwrap(), "pull", "--rebase"])
+            .output().await.map_err(|e| format!("git pull: {}", e))?;
+        if !out.status.success() {
+            log::warn!("git pull: {}", String::from_utf8_lossy(&out.stderr));
+        }
+    } else {
+        set_status("cloning db repo...");
+        std::fs::create_dir_all(&cache).ok();
+        let _ = std::fs::remove_dir_all(&cache);
+        let out = tokio::process::Command::new("git")
+            .args(["clone", DB_REPO_URL, cache.to_str().unwrap()])
+            .output().await.map_err(|e| format!("git clone: {}", e))?;
+        if !out.status.success() {
+            set_status(&format!("clone failed: {}", String::from_utf8_lossy(&out.stderr)));
+            return Err("clone failed".into());
+        }
+    }
+
+    // Copy DB files
+    set_status("copying database files...");
+    for (src, dst_name) in &[(&servers_db, "servers.db"), (&kitty_db, "kitty.db")] {
+        if src.exists() {
+            std::fs::copy(src, cache.join(dst_name)).map_err(|e| format!("copy: {}", e))?;
+        }
+    }
+
+    // Export servers as JSON
+    set_status("exporting servers.json...");
+    {
+        let db_guard = ctx.db.lock().map_err(|e| format!("lock: {}", e))?;
+        if let Some(ref db) = *db_guard {
+            let servers = db.get_all_servers().unwrap_or_default();
+            let kitty_db_guard = ctx.kitty_db.lock().map_err(|e| format!("lock: {}", e))?;
+            let kitty_list = kitty_db_guard.as_ref()
+                .map(|kdb| kdb.get_all().unwrap_or_default())
+                .unwrap_or_default();
+            let export = serde_json::json!({
+                "exported_at": chrono::Utc::now().to_rfc3339(),
+                "total_servers": servers.len(),
+                "total_kitty_ips": kitty_list.len(),
+                "cycle_summary": db.get_cycle_summary().unwrap_or(serde_json::json!({})),
+                "servers": servers,
+                "kitty_ips": kitty_list,
+            });
+            std::fs::write(cache.join("servers.json"),
+                serde_json::to_string_pretty(&export).unwrap_or_default())
+                .map_err(|e| format!("write json: {}", e))?;
+        }
+    }
+
+    // Create README if not exists
+    let readme_path = cache.join("README.md");
+    if !readme_path.exists() {
+        std::fs::write(&readme_path, format!("# MineFind Database\n\nAuto-updated Minecraft server database from MineFind scanner.\n\nLast sync: {}\n", chrono::Utc::now().to_rfc3339())).ok();
+    }
+
+    // Git add, commit, push
+    set_status("committing...");
+    let _ = tokio::process::Command::new("git")
+        .args(["-C", cache.to_str().unwrap(), "add", "-A"])
+        .output().await;
+
+    let ts = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let servers_count = get_db(ctx).ok().and_then(|g| g.as_ref().unwrap().get_server_count().ok()).unwrap_or(0);
+    let _ = tokio::process::Command::new("git")
+        .args(["-C", cache.to_str().unwrap(), "commit", "-m", &format!("Auto-sync: {} servers", servers_count)])
+        .output().await;
+
+    set_status("pushing...");
+    let out = tokio::process::Command::new("git")
+        .args(["-C", cache.to_str().unwrap(), "push"])
+        .output().await.map_err(|e| format!("git push: {}", e))?;
+
+    if out.status.success() {
+        set_status(&format!("pushed at {} — {} servers", ts, servers_count));
+        log::info!("DB pushed to minefind-database: {} servers, {} kitty IPs", servers_count,
+            ctx.kitty_db.lock().ok().and_then(|g| g.as_ref().map(|k| k.get_all().unwrap_or_default().len())).unwrap_or(0));
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        set_status(&format!("push failed: {}", stderr));
+        log::error!("git push failed: {}", stderr);
+        return Err("push failed".into());
+    }
+
+    Ok(())
 }

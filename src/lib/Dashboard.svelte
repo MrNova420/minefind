@@ -1,5 +1,5 @@
 <script>
-  let { stats = {}, servers = [], cycleStats = { cycles: 0, total_servers_found: 0, total_targets_scanned: 0 }, progress = {}, lifetimeScanned = 0, onRefresh = () => {} } = $props();
+  let { stats = {}, servers = [], cycleStats = { cycles: 0, total_servers_found: 0, total_targets_scanned: 0 }, progress = {}, lifetimeScanned = 0, dbPushStatus = {}, onRefresh = () => {}, onPushDb = () => {} } = $props();
 
   function categoryLabel(cat) {
     const labels = {
@@ -99,6 +99,15 @@
     <div class="card">
       <div class="card-label">Total Found (all cycles)</div>
       <div class="card-value green">{cycleStats.total_servers_found ?? 0}</div>
+    </div>
+    <div class="card push-card">
+      <div class="card-label">Export Database</div>
+      <button class="push-btn" onclick={onPushDb} disabled={dbPushStatus?.running}>
+        {dbPushStatus?.running ? "Pushing..." : "Push to GitHub"}
+      </button>
+      {#if dbPushStatus?.status}
+        <div class="push-status">{dbPushStatus.status}</div>
+      {/if}
     </div>
   </div>
 
@@ -210,9 +219,17 @@
   .bar-count { width: 40px; font-size: 13px; color: var(--text-dim); text-align: right; }
 
   .mini-table { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
-  .cycle-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .cycle-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px; }
   .cycle-grid .card { padding: 10px; }
   .cycle-grid .card-value.green { color: var(--green); }
+  .push-card { border-color: var(--accent2); }
+  .push-btn {
+    margin-top: 4px; padding: 5px 12px; font-size: 11px;
+    background: var(--accent2); color: white; border: 1px solid var(--accent2);
+    border-radius: 4px; cursor: pointer; width: 100%;
+  }
+  .push-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .push-status { font-size: 10px; color: var(--text-dim); margin-top: 4px; word-break: break-all; }
 
   .mt-header, .mt-row {
     display: grid;
