@@ -201,7 +201,10 @@ async fn main() {
         .with_state(ctx);
 
     let frontend_path = std::env::var("MINEFIND_FRONTEND")
-        .unwrap_or_else(|_| "../dist".to_string());
+        .unwrap_or_else(|_| {
+            let p = std::path::PathBuf::from("../dist");
+            if p.exists() { p.to_str().unwrap().to_string() } else { "dist".to_string() }
+        });
     let app = app
         .route_service("/", ServeDir::new(&frontend_path))
         .route_service("/{*path}", ServeDir::new(&frontend_path));
