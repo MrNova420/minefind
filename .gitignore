@@ -2,8 +2,3 @@ target/
 dist/
 node_modules/
 .DS_Store
-*.db
-*.db-journal
-*.db-wal
-*.db-shm
-lifetime_counter.txt

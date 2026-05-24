@@ -86,6 +86,20 @@ else
     exit 1
 fi
 
+# ─── Copy bundled databases to data dir ───
+echo ""
+echo "Copying bundled databases..."
+for f in servers.db kitty.db lifetime_counter.txt; do
+    SRC="$DIR/data/$f"
+    DST="$DATA_DIR/$f"
+    if [ -f "$SRC" ] && [ ! -f "$DST" ]; then
+        cp "$SRC" "$DST"
+        echo -e "${GREEN}[OK]${NC}   Copied $f → $DATA_DIR/"
+    elif [ -f "$DST" ]; then
+        echo -e "${CYAN}[!]${NC}   $f already exists, skipping"
+    fi
+done
+
 # ─── Setup git ───
 echo ""
 echo "Checking git configuration..."
