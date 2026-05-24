@@ -88,7 +88,7 @@
     }
   }
 
-  async function revertifyWL() {
+  async function reverifyWL() {
     const res = await api("/servers/reverify-wl", { method: "POST" });
     if (res?.ok) {
       wlReverify = { running: true, total: 0, done: 0 };
