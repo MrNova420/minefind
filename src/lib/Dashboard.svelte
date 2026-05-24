@@ -118,7 +118,7 @@
         <div class="mt-header">
           <span>WL</span><span>IP:Port</span><span>MOTD</span><span>Players</span><span>Version</span><span>Category</span><span>Last Seen</span>
         </div>
-        {#each allServers.sort((a, b) => (b.online_players || 0) - (a.online_players || 0)).slice(0, 100) as s}
+        {#each allServers.toSorted((a, b) => (b.online_players || 0) - (a.online_players || 0)).slice(0, 100) as s}
           <div class="mt-row">
             <span class="wl-cell">
               {#if s.whitelisted === false}✅{:else if s.whitelisted === true}🔒{:else}❓{/if}

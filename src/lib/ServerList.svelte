@@ -21,7 +21,7 @@
         if (wlFilter === "unknown" && s.whitelisted !== null && s.whitelisted !== undefined) return false;
         return true;
       })
-      .sort((a, b) => {
+      .toSorted((a, b) => {
         if (sortBy === "players") return (b.online_players || 0) - (a.online_players || 0);
         if (sortBy === "ping") return (a.ping_ms || 0) - (b.ping_ms || 0);
         if (sortBy === "motd") return (a.motd || "").localeCompare(b.motd || "");
@@ -90,8 +90,7 @@
       <span class="col-motd">MOTD</span>
       <span class="col-players">Players</span>
       <span class="col-version">Version</span>
-      <span class="col-category">Category</span>
-      <span class="col-wl">WL Status</span>
+      <span class="col-category">Category / WL</span>
       <span class="col-ping">Ping</span>
     </div>
 
@@ -118,7 +117,6 @@
             <span class="tag tag-unknown">?</span>
           {/if}
         </span>
-        <span class="col-wl"></span>
         <span class="col-ping small">{server.ping_ms ?? "?"}ms</span>
       </div>
     {/each}
@@ -191,7 +189,7 @@
   .table-header,
   .table-row {
     display: grid;
-    grid-template-columns: 160px 1fr 100px 80px 190px 1px 60px;
+    grid-template-columns: 160px 1fr 100px 80px 190px 70px;
     gap: 8px;
     align-items: center;
     padding: 8px 12px;
