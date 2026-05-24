@@ -1,0 +1,392 @@
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::time::{timeout, Duration};
+use crate::scanner::{ServerInfo, PlayerSample, ServerCategory};
+
+const PING_TIMEOUT: Duration = Duration::from_secs(2);
+
+fn write_varint(buf: &mut Vec<u8>, mut value: i32) {
+    loop {
+        if value & !0x7F == 0 {
+            buf.push(value as u8);
+            return;
+        }
+        buf.push((value as u8 & 0x7F) | 0x80);
+        value = (value >> 7) & (i32::MAX >> 6);
+    }
+}
+
+pub fn read_varint(reader: &mut &[u8]) -> Option<(i32, usize)> {
+    let mut value: i32 = 0;
+    let mut bytes_read = 0;
+    loop {
+        if bytes_read >= 5 || reader.is_empty() {
+            return None;
+        }
+        let byte = reader[0];
+        value |= ((byte & 0x7F) as i32) << (bytes_read * 7);
+        bytes_read += 1;
+        *reader = &reader[1..];
+        if byte & 0x80 == 0 {
+            return Some((value, bytes_read));
+        }
+    }
+}
+
+fn build_ping_packet(host: &str, port: u16) -> Vec<u8> {
+    let mut body = Vec::new();
+    write_varint(&mut body, 767);
+    write_varint(&mut body, host.len() as i32);
+    body.extend_from_slice(host.as_bytes());
+    body.extend_from_slice(&port.to_be_bytes());
+    write_varint(&mut body, 1);
+
+    let total = 1_i32 + body.len() as i32;
+    let mut result = Vec::new();
+    write_varint(&mut result, total);
+    result.push(0x00);
+    result.extend_from_slice(&body);
+    result
+}
+
+fn build_status_request() -> Vec<u8> {
+    let mut result = Vec::new();
+    write_varint(&mut result, 1);
+    result.push(0x00);
+    result
+}
+
+pub async fn ping_server(ip: &str, port: u16) -> Result<ServerInfo, String> {
+    ping_server_via_proxy(ip, port, None).await
+}
+
+pub async fn ping_server_via_proxy(ip: &str, port: u16, proxy: Option<&str>) -> Result<ServerInfo, String> {
+    let result = ping_server_via_proxy_inner(ip, port, proxy).await;
+    match &result {
+        Ok(info) => log::info!("PING OK {}:{} v={}", ip, port, info.version),
+        Err(e) => log::warn!("PING FAIL {}:{} — {}", ip, port, e),
+    }
+    result
+}
+
+async fn ping_server_via_proxy_inner(ip: &str, port: u16, proxy: Option<&str>) -> Result<ServerInfo, String> {
+    let start = std::time::Instant::now();
+
+    let stream = if let Some(proxy_addr) = proxy {
+        match timeout(PING_TIMEOUT, crate::proxy::connect_through_socks5(proxy_addr, ip, port)).await {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => return Err(format!("proxy connection failed to {}:{}: {}", ip, port, e)),
+            Err(_) => return Err(format!("proxy timeout to {}:{}", ip, port)),
+        }
+    } else {
+        timeout(PING_TIMEOUT, TcpStream::connect((ip, port)))
+            .await
+            .map_err(|_| format!("timeout connecting to {}:{}", ip, port))?
+            .map_err(|e| format!("connection failed to {}:{}: {}", ip, port, e))?
+    };
+
+    let _ = stream.set_nodelay(true);
+    let (mut reader, mut writer) = stream.into_split();
+
+    let ping_packet = build_ping_packet(ip, port);
+    let mut send_buf = Vec::new();
+    send_buf.extend_from_slice(&ping_packet);
+    send_buf.extend_from_slice(&build_status_request());
+
+    timeout(PING_TIMEOUT, writer.write_all(&send_buf))
+        .await
+        .map_err(|_| format!("timeout sending ping to {}:{}", ip, port))?
+        .map_err(|e| format!("write error to {}:{}: {}", ip, port, e))?;
+
+    // Read VarInt packet length (1-5 bytes)
+    let mut len_raw = Vec::new();
+    loop {
+        let mut byte = [0u8; 1];
+        timeout(PING_TIMEOUT, reader.read_exact(&mut byte))
+            .await
+            .map_err(|_| format!("timeout reading packet length from {}:{}", ip, port))?
+            .map_err(|e| format!("read error from {}:{}: {}", ip, port, e))?;
+        len_raw.push(byte[0]);
+        if byte[0] & 0x80 == 0 {
+            break;
+        }
+        if len_raw.len() > 5 {
+            return Err(format!("invalid VarInt length from {}:{}", ip, port));
+        }
+    }
+
+    let mut len_slice = &len_raw[..];
+    let (packet_len, _) = read_varint(&mut len_slice)
+        .ok_or_else(|| format!("failed to parse packet length from {}:{}", ip, port))?;
+
+    if packet_len <= 0 || packet_len > 1_048_576 {
+        return Err(format!("invalid packet length {} from {}:{}", packet_len, ip, port));
+    }
+
+    // Read exactly the packet data
+    let mut packet_data = vec![0u8; packet_len as usize];
+    timeout(PING_TIMEOUT, reader.read_exact(&mut packet_data))
+        .await
+        .map_err(|_| format!("timeout reading response from {}:{}", ip, port))?
+        .map_err(|e| format!("read error from {}:{}: {}", ip, port, e))?;
+
+    let ping_ms = start.elapsed().as_millis() as i64;
+
+    let mut response = Vec::with_capacity(len_raw.len() + packet_data.len());
+    response.extend_from_slice(&len_raw);
+    response.extend_from_slice(&packet_data);
+
+    parse_ping_response(&response, ip, port, ping_ms)
+}
+
+fn parse_ping_response(
+    data: &[u8],
+    ip: &str,
+    port: u16,
+    ping_ms: i64,
+) -> Result<ServerInfo, String> {
+    let mut slice = data;
+    let (_packet_len, _) = read_varint(&mut slice).ok_or("failed to read packet length")?;
+    let (packet_id, _) = read_varint(&mut slice).ok_or("failed to read packet ID")?;
+
+    if packet_id != 0x00 {
+        return Err(format!("unexpected packet ID: {}", packet_id));
+    }
+
+    let (json_len, _) = read_varint(&mut slice).ok_or("failed to read JSON length")?;
+    if json_len as usize > slice.len() {
+        return Err("JSON length exceeds remaining data".to_string());
+    }
+
+    let json_str = std::str::from_utf8(&slice[..json_len as usize])
+        .map_err(|e| format!("invalid UTF-8 in response: {}", e))?;
+
+    parse_status_json(json_str, ip, port, ping_ms)
+}
+
+fn parse_status_json(
+    json_str: &str,
+    ip: &str,
+    port: u16,
+    ping_ms: i64,
+) -> Result<ServerInfo, String> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(json_str).map_err(|e| format!("JSON parse error: {}", e))?;
+
+    let version_obj = parsed.get("version");
+    let protocol = version_obj
+        .and_then(|v| v.get("protocol"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(-1) as i32;
+    let version = version_obj
+        .and_then(|v| v.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    let players_obj = parsed.get("players");
+    let online_players = players_obj
+        .and_then(|p| p.get("online"))
+        .and_then(|p| p.as_i64())
+        .unwrap_or(0) as i32;
+    let max_players = players_obj
+        .and_then(|p| p.get("max"))
+        .and_then(|p| p.as_i64())
+        .unwrap_or(0) as i32;
+
+    let player_sample = players_obj
+        .and_then(|p| p.get("sample"))
+        .and_then(|p| p.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| {
+                    Some(PlayerSample {
+                        name: s.get("name")?.as_str()?.to_string(),
+                        id: s.get("id")?.as_str()?.to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let motd = parsed.get("description").map(|d| extract_motd(d)).unwrap_or_default();
+
+    let modded = parsed
+        .get("modinfo")
+        .and_then(|m| m.get("type"))
+        .and_then(|m| m.as_str())
+        .map(|t| t == "FML" || t == "FORGE" || t == "LITE")
+        .unwrap_or(false);
+
+    let mod_list: Vec<String> = parsed
+        .get("modinfo")
+        .and_then(|m| m.get("modList"))
+        .and_then(|m| m.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.get("modid").and_then(|m| m.as_str()).map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let modded = modded || !mod_list.is_empty();
+
+    // Check for Fabric/Quilt in version
+    let modded = modded || version.to_lowercase().contains("fabric") || version.to_lowercase().contains("quilt") || version.to_lowercase().contains("forge");
+
+    let category = categorize_server(&motd, online_players, modded);
+    let tags = generate_tags(&category, &version, online_players, modded, &motd);
+
+    let now = chrono::Utc::now().to_rfc3339();
+
+    Ok(ServerInfo {
+        ip: ip.to_string(),
+        port,
+        motd,
+        protocol,
+        version,
+        online_players,
+        max_players,
+        player_sample,
+        ping_ms,
+        modded,
+        mod_list,
+        whitelisted: None,
+        category,
+        tags,
+        last_seen: now.clone(),
+        first_seen: now,
+    })
+}
+
+fn extract_motd(description: &serde_json::Value) -> String {
+    match description {
+        serde_json::Value::String(s) => strip_motd_formatting(s),
+        serde_json::Value::Object(obj) => {
+            if let Some(text) = obj.get("text").and_then(|t| t.as_str()) {
+                let mut result = text.to_string();
+                if let Some(extra) = obj.get("extra").and_then(|e| e.as_array()) {
+                    for part in extra {
+                        if let Some(t) = part.get("text").and_then(|t| t.as_str()) {
+                            result.push_str(t);
+                        }
+                    }
+                }
+                strip_motd_formatting(&result)
+            } else if let Some(translate) = obj.get("translate").and_then(|t| t.as_str()) {
+                translate.to_string()
+            } else {
+                "unknown".to_string()
+            }
+        }
+        _ => "unknown".to_string(),
+    }
+}
+
+fn strip_motd_formatting(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '§' && i + 1 < chars.len() {
+            i += 2;
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+    result.trim().to_string()
+}
+
+fn categorize_server(motd: &str, players: i32, modded: bool) -> ServerCategory {
+    use super::ServerCategory::*;
+    let lower = motd.to_lowercase();
+
+    if players == 0 {
+        return Idle;
+    }
+
+    if lower.contains("anarchy") || lower.contains("2b2t") || lower.contains("norules") {
+        return Anarchy;
+    }
+
+    if lower.contains("minigame") || lower.contains("skywars") || lower.contains("bedwars")
+        || lower.contains("kitpvp") || lower.contains("prison")
+    {
+        return Minigame;
+    }
+
+    if lower.contains("creative") || lower.contains("plot") || lower.contains("build") {
+        return Creative;
+    }
+
+    if modded {
+        return Modded;
+    }
+
+    if players <= 5 {
+        if lower.contains("private") || lower.contains("friends") || lower.contains("family")
+            || lower.contains("whitelist") || lower.contains("small")
+        {
+            return PrivateGroup;
+        }
+        return VanillaSurvival;
+    }
+
+    if lower.contains("survival") || lower.contains("vanilla") || lower.contains("smp") {
+        return VanillaSurvival;
+    }
+
+    VanillaSurvival
+}
+
+pub fn generate_tags_info(info: &super::ServerInfo) -> Vec<String> {
+    generate_tags(&info.category, &info.version, info.online_players, info.modded, &info.motd)
+}
+
+fn generate_tags(cat: &ServerCategory, version: &str, players: i32, modded: bool, motd: &str) -> Vec<String> {
+    let mut tags = Vec::new();
+    tags.push(cat.as_str().to_string());
+
+    if players <= 5 {
+        tags.push("small".to_string());
+    } else if players <= 20 {
+        tags.push("medium".to_string());
+    } else {
+        tags.push("large".to_string());
+    }
+
+    let lower_motd = motd.to_lowercase();
+    if lower_motd.contains("survival") {
+        tags.push("survival".to_string());
+    }
+    if lower_motd.contains("pvp") {
+        tags.push("pvp".to_string());
+    }
+    if lower_motd.contains("economy") || lower_motd.contains("shop") {
+        tags.push("economy".to_string());
+    }
+    if lower_motd.contains("rpg") || lower_motd.contains("mmo") || lower_motd.contains("dungeon") {
+        tags.push("rpg".to_string());
+    }
+    if lower_motd.contains("crossplay") || lower_motd.contains("bedrock") {
+        tags.push("crossplay".to_string());
+    }
+    if lower_motd.contains("lobby") || lower_motd.contains("hub") {
+        tags.push("lobby".to_string());
+    }
+    if lower_motd.contains("1.21") || version.contains("1.21") {
+        tags.push("1.21".to_string());
+    }
+    if lower_motd.contains("1.20") || version.contains("1.20") {
+        tags.push("1.20".to_string());
+    }
+    if lower_motd.contains("1.8") || version.contains("1.8") {
+        tags.push("1.8".to_string());
+    }
+    if modded {
+        tags.push("modded".to_string());
+    }
+
+    tags
+}
