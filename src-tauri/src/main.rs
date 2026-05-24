@@ -37,6 +37,7 @@ struct AppCtx {
     scan_concurrency: Arc<AtomicU64>,
     scan_progress: std::sync::Mutex<ScanProgress>,
     stats_cache: std::sync::Mutex<Option<serde_json::Value>>,
+    start_cycle_type: std::sync::Mutex<Option<String>>,
     kitty_ctx: kitty::KittyCtx,
     db_push_running: AtomicBool,
     db_push_status: std::sync::Mutex<String>,
@@ -144,6 +145,7 @@ async fn main() {
             start_time: Instant::now(),
         }),
         stats_cache: std::sync::Mutex::new(None),
+        start_cycle_type: std::sync::Mutex::new(None),
         kitty_ctx: kitty::KittyCtx::new(),
         db_push_running: AtomicBool::new(false),
         db_push_status: std::sync::Mutex::new(String::new()),
@@ -422,6 +424,9 @@ async fn api_scan_start(
         *ctx.scan_proxy.lock().unwrap() = Some(p.clone());
     }
 
+    let start_ct = params.get("cycle_type").filter(|s| !s.is_empty()).cloned();
+    *ctx.start_cycle_type.lock().unwrap() = start_ct;
+
     ctx.scan_probe_wl.store(probe_wl, Ordering::SeqCst);
     ctx.scan_force_proxy.store(force_proxy, Ordering::SeqCst);
     ctx.scan_concurrency.store(concurrency, Ordering::SeqCst);
@@ -480,7 +485,14 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
     });
 
     let cycle_order = CycleType::cycle_order();
-    let mut cycle_order_idx: usize = 0;
+    let mut cycle_order_idx: usize = {
+        let start_ct = ctx.start_cycle_type.lock().unwrap().take();
+        if let Some(ref sct) = start_ct {
+            cycle_order.iter().position(|ct| ct.name() == sct.as_str()).unwrap_or(0)
+        } else {
+            0
+        }
+    };
     let mut global_cycle: u64 = 0;
 
     // Check for resume
@@ -974,8 +986,15 @@ async fn run_db_push(ctx: &AppCtx) -> Result<(), String> {
             .args(["clone", DB_REPO_URL, cache.to_str().unwrap()])
             .output().await.map_err(|e| format!("git clone: {}", e))?;
         if !out.status.success() {
-            set_status(&format!("clone failed: {}", String::from_utf8_lossy(&out.stderr)));
-            return Err("clone failed".into());
+            // Clone failed — maybe empty repo? Init fresh and set remote
+            std::fs::create_dir_all(&cache).ok();
+            tokio::process::Command::new("git")
+                .args(["-C", cache.to_str().unwrap(), "init", "-b", "main"])
+                .output().await.ok();
+            tokio::process::Command::new("git")
+                .args(["-C", cache.to_str().unwrap(), "remote", "add", "origin", DB_REPO_URL])
+                .output().await.ok();
+            log::warn!("Clone failed, initialized fresh repo: {}", String::from_utf8_lossy(&out.stderr));
         }
     }
 
@@ -1026,12 +1045,18 @@ async fn run_db_push(ctx: &AppCtx) -> Result<(), String> {
     let ts = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let servers_count = get_db(ctx).ok().and_then(|g| g.as_ref().unwrap().get_server_count().ok()).unwrap_or(0);
     let _ = tokio::process::Command::new("git")
-        .args(["-C", cache.to_str().unwrap(), "commit", "-m", &format!("Auto-sync: {} servers", servers_count)])
+        .args(["-C", cache.to_str().unwrap(), "commit", "--allow-empty", "-m", &format!("Auto-sync: {} servers", servers_count)])
         .output().await;
 
     set_status("pushing...");
+    let branch_out = tokio::process::Command::new("git")
+        .args(["-C", cache.to_str().unwrap(), "branch", "--show-current"])
+        .output().await.map_err(|e| format!("git branch: {}", e))?;
+    let branch = String::from_utf8_lossy(&branch_out.stdout).trim().to_string();
+    let push_branch = if branch.is_empty() { "main".to_string() } else { branch };
+
     let out = tokio::process::Command::new("git")
-        .args(["-C", cache.to_str().unwrap(), "push"])
+        .args(["-C", cache.to_str().unwrap(), "push", "origin", &push_branch])
         .output().await.map_err(|e| format!("git push: {}", e))?;
 
     if out.status.success() {

@@ -1,5 +1,5 @@
 <script>
-  let { cycleData = { summary: {}, history: [], checkpoint: null } } = $props();
+  let { cycleData = { summary: {}, history: [], checkpoint: null }, onStartCycle = () => {} } = $props();
 
   function formatNum(n) {
     if (n == null) return "—";
@@ -24,6 +24,20 @@
     };
     return labels[type] || type || "—";
   }
+
+  let typeSummary = $derived(
+    (cycleData.history || []).reduce((acc, c) => {
+      const t = c.cycle_type || "unknown";
+      if (!acc[t]) acc[t] = { type: t, count: 0, scanned: 0, found: 0, last: null };
+      acc[t].count++;
+      acc[t].scanned += c.targets_scanned || 0;
+      acc[t].found += c.servers_found || 0;
+      if (!acc[t].last || (c.finished_at && c.finished_at > acc[t].last)) {
+        acc[t].last = c.finished_at;
+      }
+      return acc;
+    }, {})
+  );
 </script>
 
 <div class="cycles">
@@ -46,11 +60,34 @@
 
   {#if cycleData.checkpoint}
     <div class="checkpoint-banner">
-      <span>Saved checkpoint exists: {cycleLabel(cycleData.checkpoint.cycle_type)} at {formatNum(cycleData.checkpoint.scanned_ips)} IPs ({cycleData.checkpoint.found_servers} servers found)</span>
-      <span class="note">Will auto-resume when scan starts</span>
+      <span>Saved checkpoint: {cycleLabel(cycleData.checkpoint.cycle_type)} at {formatNum(cycleData.checkpoint.scanned_ips)} IPs ({cycleData.checkpoint.found_servers} found)</span>
+      <span class="note">Auto-resumes on next Scan</span>
     </div>
   {/if}
 
+  <h3>Continue by Type</h3>
+  <div class="table-wrap">
+    <div class="table-header type-header">
+      <span>Cycle Type</span><span>Runs</span><span>Total Scanned</span><span>Total Found</span><span>Last Run</span><span></span>
+    </div>
+    {#each Object.values(typeSummary) as t}
+      <div class="table-row type-row">
+        <span class="cycle-type">{cycleLabel(t.type)}</span>
+        <span>{t.count}</span>
+        <span class="mono">{formatNum(t.scanned)}</span>
+        <span class="found">{t.found}</span>
+        <span class="small">{timeAgo(t.last)}</span>
+        <span>
+          <button class="continue-btn" onclick={() => onStartCycle(t.type)}>Continue</button>
+        </span>
+      </div>
+    {/each}
+    {#if Object.keys(typeSummary).length === 0}
+      <div class="empty">No cycles completed yet. Start a scan to begin.</div>
+    {/if}
+  </div>
+
+  <h3 style="margin-top: 24px">Full History</h3>
   <div class="table-wrap">
     <div class="table-header">
       <span>#</span><span>Type</span><span>Scanned</span><span>Found</span><span>Started</span><span>Finished</span>
@@ -67,7 +104,7 @@
         </div>
       {/each}
     {:else}
-      <div class="empty">No cycles completed yet. Start a scan to begin gathering data.</div>
+      <div class="empty">No cycles completed yet.</div>
     {/if}
   </div>
 </div>
@@ -76,6 +113,7 @@
   .cycles { max-width: 1000px; margin: 0 auto; }
 
   h2 { font-size: 16px; font-weight: 600; margin-bottom: 16px; }
+  h3 { font-size: 14px; font-weight: 600; margin-bottom: 10px; color: var(--text-dim); }
 
   .grid {
     display: grid;
@@ -113,10 +151,10 @@
     border: 1px solid var(--border);
     border-radius: var(--radius);
     overflow: hidden;
+    margin-bottom: 16px;
   }
   .table-header, .table-row {
     display: grid;
-    grid-template-columns: 50px 140px 120px 80px 100px 1fr;
     gap: 8px;
     padding: 6px 12px;
     font-size: 12px;
@@ -132,10 +170,20 @@
   .table-row { border-top: 1px solid var(--border); }
   .table-row:hover { background: var(--bg3); }
 
+  .type-header { grid-template-columns: 140px 50px 120px 80px 100px 90px; }
+  .type-row { grid-template-columns: 140px 50px 120px 80px 100px 90px; }
+
   .cycle-num { font-weight: 600; color: var(--accent2); }
   .cycle-type { font-size: 11px; }
   .found { color: var(--green); font-weight: 500; }
   .mono { font-family: "SF Mono", "Fira Code", monospace; font-size: 11px; }
   .small { font-size: 11px; color: var(--text-dim); }
   .empty { padding: 32px; text-align: center; color: var(--text-dim); font-size: 13px; }
+
+  .continue-btn {
+    padding: 3px 10px; font-size: 11px;
+    background: var(--accent); color: white;
+    border: 1px solid var(--accent); border-radius: 4px; cursor: pointer;
+  }
+  .continue-btn:hover { background: var(--accent2); }
 </style>

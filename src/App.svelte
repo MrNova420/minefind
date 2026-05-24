@@ -155,22 +155,30 @@
       await api("/scan/cancel", { method: "POST" });
       scanRunning = false;
     } else {
-      const params = new URLSearchParams({
-        probe_whitelist: probeWhitelist ? "1" : "0",
-        residential: includeResidential ? "1" : "0",
-        force_proxy: forceProxy ? "1" : "0",
-        concurrency: String(concurrency),
-      });
-      if (forceProxy && proxyAddr.trim()) params.set("proxy", proxyAddr.trim());
-      const res = await api(`/scan/start?${params}`, { method: "POST" });
-      if (res?.ok) {
-        scanRunning = true;
-        pollScan();
-        pollProgress();
-        pollCycleStats();
-      } else {
-        alert(res?.error || "Failed to start scan");
-      }
+      await startCycle();
+    }
+  }
+
+  async function startCycle(cycleType = null) {
+    if (scanRunning) {
+      await api("/scan/cancel", { method: "POST" });
+      scanRunning = false;
+    }
+    const params = new URLSearchParams({
+      probe_whitelist: probeWhitelist ? "1" : "0",
+      force_proxy: forceProxy ? "1" : "0",
+      concurrency: String(concurrency),
+    });
+    if (cycleType) params.set("cycle_type", cycleType);
+    if (forceProxy && proxyAddr.trim()) params.set("proxy", proxyAddr.trim());
+    const res = await api(`/scan/start?${params}`, { method: "POST" });
+    if (res?.ok) {
+      scanRunning = true;
+      pollScan();
+      pollProgress();
+      pollCycleStats();
+    } else {
+      alert(res?.error || "Failed to start scan");
     }
   }
 
@@ -417,7 +425,7 @@
     {:else if currentView === "kitty"}
       <Kitty servers={kittyServers} stats={kittyStats} verifyProgress={kittyVerifyProgress} onSync={kittySync} onVerify={kittyVerify} />
     {:else if currentView === "cycles"}
-      <Cycles {cycleData} />
+      <Cycles {cycleData} onStartCycle={(type) => startCycle(type)} />
     {/if}
   </main>
 </div>
