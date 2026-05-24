@@ -226,6 +226,13 @@
       await refreshAll();
     }
     pollCycleStats();
+    // Resume live polling if scan is already running
+    const status = await api("/scan/status");
+    if (status?.running) {
+      scanRunning = true;
+      pollScan();
+      pollProgress();
+    }
   });
 
   let pct = $derived(progress.total_ips > 0 ? Math.round((progress.scanned_ips / progress.total_ips) * 100) : 0);
