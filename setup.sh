@@ -57,13 +57,8 @@ echo -e "${GREEN}[OK]${NC}   Data directory: $DATA_DIR"
 echo ""
 echo "Installing frontend dependencies..."
 cd "$DIR"
-if [ ! -d "node_modules" ]; then
-    npm install --silent
-    echo -e "${GREEN}[OK]${NC}   npm packages installed"
-else
-    echo -e "${GREEN}[OK]${NC}   Already installed, updating..."
-    npm install --silent 2>/dev/null
-fi
+npm install --silent
+echo -e "${GREEN}[OK]${NC}   npm packages installed"
 
 # ─── Build frontend ───
 echo ""
@@ -76,9 +71,15 @@ echo -e "${GREEN}[OK]${NC}   Frontend built ($FRONTEND_SIZE)"
 echo ""
 echo "Building backend (Rust)..."
 cd "$DIR/src-tauri"
-cargo build --release 2>&1 | tail -5
+cargo build --release 2>&1 | grep -E "error|Compiling minefind|Finished"
+CARGO_EXIT=${PIPESTATUS[0]}
+if [ $CARGO_EXIT -ne 0 ]; then
+    echo -e "${RED}[FAIL]${NC} Backend build failed"
+    exit 1
+fi
 BIN="$DIR/src-tauri/target/release/minefind"
-if [ -f "$BIN" ]; then
+BIN_SIZE=$(du -sh "$BIN" | cut -f1)
+echo -e "${GREEN}[OK]${NC}   Backend built ($BIN_SIZE)"
     BIN_SIZE=$(du -sh "$BIN" | cut -f1)
     echo -e "${GREEN}[OK]${NC}   Backend built ($BIN_SIZE)"
 else
