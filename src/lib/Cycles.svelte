@@ -30,12 +30,16 @@
   let typeSummary = $derived(
     allTypes.map(t => {
       const matches = (cycleData.history || []).filter(c => c.cycle_type === t);
+      // Include checkpoint data if it matches this type
+      const cp = cycleData.checkpoint;
+      const cpMatch = cp && cp.cycle_type === t;
       return {
         type: t,
-        count: matches.length,
-        scanned: matches.reduce((s, c) => s + (c.targets_scanned || 0), 0),
-        found: matches.reduce((s, c) => s + (c.servers_found || 0), 0),
-        last: matches.length ? matches.reduce((a, c) => (c.finished_at && c.finished_at > a) ? c.finished_at : a, "") : null,
+        count: matches.length + (cpMatch ? 1 : 0),
+        scanned: matches.reduce((s, c) => s + (c.targets_scanned || 0), 0) + (cpMatch ? (cp.scanned_ips || 0) : 0),
+        found: matches.reduce((s, c) => s + (c.servers_found || 0), 0) + (cpMatch ? (cp.found_servers || 0) : 0),
+        last: matches.length ? matches.reduce((a, c) => (c.finished_at && c.finished_at > a) ? c.finished_at : a, "") : (cpMatch ? "Active" : null),
+        active: cpMatch,
       };
     })
   );
@@ -77,7 +81,9 @@
         <span>{t.count}</span>
         <span class="mono">{formatNum(t.scanned)}</span>
         <span class="found">{t.found}</span>
-        <span class="small">{timeAgo(t.last)}</span>
+        <span class="small">
+          {t.active ? "Active" : timeAgo(t.last)}
+        </span>
         <span>
           <button class="continue-btn" onclick={() => onStartCycle(t.type)}>Continue</button>
         </span>
@@ -104,6 +110,8 @@
           </span>
         </div>
       {/each}
+    {:else if cycleData.checkpoint}
+      <div class="empty" style="color:var(--accent2)">No completed cycles — checkpoint paused at {cycleLabel(cycleData.checkpoint.cycle_type)} ({formatNum(cycleData.checkpoint.scanned_ips)} IPs, {cycleData.checkpoint.found_servers} found). Use Continue or Resume to keep going.</div>
     {:else}
       <div class="empty">No cycles completed yet. Start a scan to begin.</div>
     {/if}

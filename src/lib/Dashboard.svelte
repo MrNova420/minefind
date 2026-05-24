@@ -56,8 +56,8 @@
       <div class="card-value dim">{stats.unknown_whitelist ?? 0}</div>
     </div>
     <div class="card">
-      <div class="card-label">Total Servers</div>
-      <div class="card-value">{stats.total ?? 0}</div>
+      <div class="card-label">Total Scanned</div>
+      <div class="card-value">{Intl.NumberFormat().format(cycleStats.total_targets_scanned || lifetimeScanned)}</div>
     </div>
     <div class="card">
       <div class="card-label">Players Online</div>
