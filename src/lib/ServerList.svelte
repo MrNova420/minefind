@@ -1,5 +1,7 @@
 <script>
-  let { servers = [], wlReverify = { running: false, total: 0, done: 0 }, onReverifyWL = () => {} } = $props();
+  let { servers = [], wlReverify = { running: false, total: 0, done: 0 }, onReverifyWL = () => {}, onDedup = () => {} } = $props();
+
+  let dedupResult = $state(null);
 
   let search = $state("");
   let categoryFilter = $state("all");
@@ -74,6 +76,9 @@
     <button class="reverify-btn" onclick={onReverifyWL} disabled={wlReverify.running}>
       {wlReverify.running ? `Reverifying ${wlReverify.done}/${wlReverify.total}...` : "Re-verify WL"}
     </button>
+    <button class="dedup-btn" onclick={async () => { const r = await fetch('/api/servers/dedup', {method:'POST'}); dedupResult = await r.json(); }}>
+      Check Dupes
+    </button>
     <span class="count">{filtered.length} servers</span>
   </div>
 
@@ -81,6 +86,16 @@
     <div class="reverify-bar">
       <div class="reverify-fill" style="width: {wlPct}%"></div>
       <span class="reverify-text">{wlReverify.done}/{wlReverify.total} servers checked · {wlPct}%</span>
+    </div>
+  {/if}
+
+  {#if dedupResult}
+    <div class="dedup-result" class:clean={!dedupResult.duplicates}>
+      {#if dedupResult.duplicates > 0}
+        Found {dedupResult.duplicates} duplicate pairs across {dedupResult.total} rows ({dedupResult.unique} unique)
+      {:else}
+        Clean — {dedupResult.total} rows, {dedupResult.unique} unique, 0 duplicates
+      {/if}
     </div>
   {/if}
 
@@ -163,6 +178,20 @@
     white-space: nowrap;
   }
   .reverify-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+  .dedup-btn {
+    padding: 6px 14px; font-size: 12px; background: var(--bg3); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px; cursor: pointer; white-space: nowrap;
+  }
+  .dedup-result {
+    padding: 8px 12px; margin-bottom: 12px; border-radius: var(--radius);
+    font-size: 11px; background: rgba(248, 113, 113, 0.08); color: var(--red);
+    border: 1px solid rgba(248, 113, 113, 0.15);
+  }
+  .dedup-result.clean {
+    background: rgba(74, 222, 128, 0.06); color: var(--green);
+    border-color: rgba(74, 222, 128, 0.15);
+  }
 
   .reverify-bar {
     height: 22px;

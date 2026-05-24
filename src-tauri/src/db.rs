@@ -318,4 +318,25 @@ impl Database {
         }
         Ok(result)
     }
+
+    pub fn dedup_check(&self) -> Result<serde_json::Value> {
+        let conn = self.conn.lock().unwrap();
+        let total: i64 = conn.query_row("SELECT COUNT(*) FROM servers", [], |r| r.get(0))?;
+        let unique: i64 = conn.query_row("SELECT COUNT(DISTINCT ip || ':' || port) FROM servers", [], |r| r.get(0))?;
+        let mut stmt = conn.prepare(
+            "SELECT ip || ':' || port, COUNT(*) as cnt FROM servers GROUP BY ip, port HAVING cnt > 1"
+        )?;
+        let dupes: Vec<serde_json::Value> = stmt.query_map([], |row| {
+            Ok(serde_json::json!({
+                "key": row.get::<_, String>(0)?,
+                "count": row.get::<_, i64>(1)?,
+            }))
+        })?.filter_map(|r| r.ok()).collect();
+        Ok(serde_json::json!({
+            "total": total,
+            "unique": unique,
+            "duplicates": dupes.len(),
+            "duplicate_pairs": dupes,
+        }))
+    }
 }

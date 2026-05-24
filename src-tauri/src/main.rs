@@ -199,6 +199,7 @@ async fn main() {
         .route("/api/db/push/status", get(api_db_push_status))
         .route("/api/servers/reverify-wl", post(api_reverify_wl))
         .route("/api/servers/reverify-wl/status", get(api_reverify_wl_status))
+        .route("/api/servers/dedup", post(api_dedup))
         .route("/api/settings/rescan", post(api_set_rescan))
         .layer(CorsLayer::permissive())
         .with_state(ctx);
@@ -325,6 +326,14 @@ async fn api_reverify_wl_status(State(ctx): State<Arc<AppCtx>>) -> Json<serde_js
         "total": ctx.wl_reverify_total.load(Ordering::SeqCst),
         "done": ctx.wl_reverify_done.load(Ordering::SeqCst),
     }))
+}
+
+async fn api_dedup(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
+    let result = match get_db(&ctx) {
+        Ok(g) => g.as_ref().unwrap().dedup_check().unwrap_or(serde_json::json!({"error": "failed"})),
+        Err(e) => serde_json::json!({"error": e}),
+    };
+    Json(result)
 }
 
 async fn api_set_rescan(
