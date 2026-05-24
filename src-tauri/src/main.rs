@@ -40,6 +40,9 @@ struct AppCtx {
     kitty_ctx: kitty::KittyCtx,
     db_push_running: AtomicBool,
     db_push_status: std::sync::Mutex<String>,
+    wl_reverify_running: AtomicBool,
+    wl_reverify_total: AtomicU64,
+    wl_reverify_done: AtomicU64,
 }
 
 #[derive(Clone, PartialEq)]
@@ -143,6 +146,9 @@ async fn main() {
         kitty_ctx: kitty::KittyCtx::new(),
         db_push_running: AtomicBool::new(false),
         db_push_status: std::sync::Mutex::new(String::new()),
+        wl_reverify_running: AtomicBool::new(false),
+        wl_reverify_total: AtomicU64::new(0),
+        wl_reverify_done: AtomicU64::new(0),
     });
 
     log::info!("Direct connections only. Enable proxy (Tor) in Settings for privacy.");
@@ -189,6 +195,8 @@ async fn main() {
         .route("/api/kitty/status", get(kitty::api_kitty_status))
         .route("/api/db/push", post(api_db_push))
         .route("/api/db/push/status", get(api_db_push_status))
+        .route("/api/servers/reverify-wl", post(api_reverify_wl))
+        .route("/api/servers/reverify-wl/status", get(api_reverify_wl_status))
         .layer(CorsLayer::permissive())
         .with_state(ctx);
 
@@ -245,6 +253,72 @@ async fn api_count(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
         Err(e) => return Json(serde_json::json!({"error":e})),
     };
     Json(serde_json::json!({"count": g.as_ref().unwrap().get_server_count().unwrap_or(0)}))
+}
+
+async fn api_reverify_wl(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
+    if ctx.wl_reverify_running.load(Ordering::SeqCst) {
+        return Json(serde_json::json!({"error": "already running"}));
+    }
+    ctx.wl_reverify_running.store(true, Ordering::SeqCst);
+    ctx.wl_reverify_total.store(0, Ordering::SeqCst);
+    ctx.wl_reverify_done.store(0, Ordering::SeqCst);
+
+    let ctx2 = ctx.clone();
+    tokio::spawn(async move {
+        let servers = get_db(&ctx2).ok()
+            .and_then(|g| g.as_ref().unwrap().get_all_servers().ok())
+            .unwrap_or_default();
+
+        let total = servers.len() as u64;
+        if total == 0 {
+            ctx2.wl_reverify_running.store(false, Ordering::SeqCst);
+            return;
+        }
+
+        ctx2.wl_reverify_total.store(total, Ordering::SeqCst);
+        log::info!("WL re-verify: probing {} servers", total);
+
+        let sem = Arc::new(tokio::sync::Semaphore::new(200));
+        let proxy = ctx2.scan_proxy.lock().unwrap().clone();
+
+        for server in &servers {
+            let permit = sem.clone().acquire_owned().await.unwrap();
+            let info = server.clone();
+            let px = proxy.clone();
+            let ctx3 = ctx2.clone();
+
+            tokio::spawn(async move {
+                let _held = permit;
+                let px_ref: Option<&str> = px.as_deref();
+                let wl = scanner::probe::check_whitelist(&info, px_ref).await;
+                if let Ok(db_guard) = get_db(&ctx3) {
+                    let mut updated = info;
+                    updated.whitelisted = wl;
+                    if let Err(e) = db_guard.as_ref().unwrap().upsert_server(&updated) {
+                        log::error!("WL re-verify upsert {}:{} - {}", updated.ip, updated.port, e);
+                    }
+                }
+                ctx3.wl_reverify_done.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        while ctx2.wl_reverify_done.load(Ordering::SeqCst) < ctx2.wl_reverify_total.load(Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+
+        ctx2.wl_reverify_running.store(false, Ordering::SeqCst);
+        log::info!("WL re-verify complete: {} servers checked", total);
+    });
+
+    Json(serde_json::json!({"ok": true, "total": 0}))
+}
+
+async fn api_reverify_wl_status(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "running": ctx.wl_reverify_running.load(Ordering::SeqCst),
+        "total": ctx.wl_reverify_total.load(Ordering::SeqCst),
+        "done": ctx.wl_reverify_done.load(Ordering::SeqCst),
+    }))
 }
 
 async fn api_stats(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {

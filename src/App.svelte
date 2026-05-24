@@ -22,6 +22,7 @@
   let kittyStats = $state({ total: 0, verified: 0, syncing: false, verifying: false });
   let kittyVerifyProgress = $state({ verify_total: 0, verify_done: 0, verify_found: 0 });
   let dbPushStatus = $state({ running: false, status: "" });
+  let wlReverify = $state({ running: false, total: 0, done: 0 });
 
   let lifetimeScanned = $derived(
     progress.lifetime_scanned || cycleStats.total_targets_scanned || 0
@@ -85,6 +86,26 @@
     } else {
       dbPushStatus = { running: false, status: res?.error || "Failed to start push" };
     }
+  }
+
+  async function revertifyWL() {
+    const res = await api("/servers/reverify-wl", { method: "POST" });
+    if (res?.ok) {
+      wlReverify = { running: true, total: 0, done: 0 };
+      pollWLReverify();
+    }
+  }
+
+  async function pollWLReverify() {
+    while (wlReverify.running) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const st = await api("/servers/reverify-wl/status");
+      if (st) {
+        wlReverify = { running: st.running || false, total: st.total || 0, done: st.done || 0 };
+        if (!st.running) break;
+      }
+    }
+    await refreshAll();
   }
 
   async function pollPushStatus() {
@@ -362,7 +383,7 @@
     {:else if currentView === "dashboard"}
       <Dashboard {stats} {servers} {cycleStats} {progress} {lifetimeScanned} {dbPushStatus} onRefresh={refreshAll} onPushDb={pushDb} />
     {:else if currentView === "servers"}
-      <ServerList {servers} />
+      <ServerList {servers} {wlReverify} onReverifyWL={reverifyWL} />
     {:else if currentView === "map"}
       <MapView {servers} />
     {:else if currentView === "kitty"}

@@ -1,5 +1,5 @@
 <script>
-  let { servers = [] } = $props();
+  let { servers = [], wlReverify = { running: false, total: 0, done: 0 }, onReverifyWL = () => {} } = $props();
 
   let search = $state("");
   let categoryFilter = $state("all");
@@ -43,6 +43,8 @@
     };
     return colors[cat] || "#6b7280";
   }
+
+  let wlPct = $derived(wlReverify.total > 0 ? Math.round((wlReverify.done / wlReverify.total) * 100) : 0);
 </script>
 
 <div class="server-list">
@@ -69,8 +71,18 @@
       <option value="ping">Sort: Ping</option>
       <option value="motd">Sort: Name</option>
     </select>
+    <button class="reverify-btn" onclick={onReverifyWL} disabled={wlReverify.running}>
+      {wlReverify.running ? `Reverifying ${wlReverify.done}/${wlReverify.total}...` : "Re-verify WL"}
+    </button>
     <span class="count">{filtered.length} servers</span>
   </div>
+
+  {#if wlReverify.running}
+    <div class="reverify-bar">
+      <div class="reverify-fill" style="width: {wlPct}%"></div>
+      <span class="reverify-text">{wlReverify.done}/{wlReverify.total} servers checked · {wlPct}%</span>
+    </div>
+  {/if}
 
   <div class="table">
     <div class="table-header">
@@ -79,7 +91,7 @@
       <span class="col-players">Players</span>
       <span class="col-version">Version</span>
       <span class="col-category">Category</span>
-      <span class="col-wl">WL</span>
+      <span class="col-wl">WL Status</span>
       <span class="col-ping">Ping</span>
     </div>
 
@@ -98,16 +110,15 @@
           >
             {server.category}
           </span>
-        </span>
-        <span class="col-wl">
-          {#if server.whitelisted === true}
-            <span class="wl-dot red"></span>
-          {:else if server.whitelisted === false}
-            <span class="wl-dot green"></span>
+          {#if server.whitelisted === false}
+            <span class="tag tag-open">Open</span>
+          {:else if server.whitelisted === true}
+            <span class="tag tag-wl">WL</span>
           {:else}
-            <span class="wl-dot dim"></span>
+            <span class="tag tag-unknown">?</span>
           {/if}
         </span>
+        <span class="col-wl"></span>
         <span class="col-ping small">{server.ping_ms ?? "?"}ms</span>
       </div>
     {/each}
@@ -127,7 +138,7 @@
   .filters {
     display: flex;
     gap: 8px;
-    margin-bottom: 16px;
+    margin-bottom: 12px;
     flex-wrap: wrap;
     align-items: center;
   }
@@ -143,10 +154,44 @@
     margin-left: auto;
   }
 
+  .reverify-btn {
+    padding: 6px 14px;
+    font-size: 12px;
+    background: var(--accent2);
+    color: white;
+    border: 1px solid var(--accent2);
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .reverify-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+  .reverify-bar {
+    height: 22px;
+    background: var(--bg3);
+    border-radius: 4px;
+    position: relative;
+    margin-bottom: 12px;
+    overflow: hidden;
+  }
+  .reverify-fill {
+    height: 100%;
+    background: var(--accent2);
+    border-radius: 4px;
+    transition: width 0.5s ease;
+  }
+  .reverify-text {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; color: white; font-weight: 500;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.4);
+  }
+
   .table-header,
   .table-row {
     display: grid;
-    grid-template-columns: 160px 1fr 100px 80px 110px 40px 60px;
+    grid-template-columns: 160px 1fr 100px 80px 190px 1px 60px;
     gap: 8px;
     align-items: center;
     padding: 8px 12px;
@@ -190,23 +235,29 @@
     font-size: 11px;
     border: 1px solid;
     font-weight: 500;
+    margin-right: 6px;
   }
 
-  .wl-dot {
+  .tag {
     display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
   }
-
-  .wl-dot.green {
-    background: var(--green);
+  .tag-open {
+    background: rgba(74, 222, 128, 0.15);
+    color: var(--green);
   }
-  .wl-dot.red {
-    background: var(--red);
+  .tag-wl {
+    background: rgba(248, 113, 113, 0.15);
+    color: var(--red);
   }
-  .wl-dot.dim {
-    background: var(--text-dim);
+  .tag-unknown {
+    background: rgba(156, 163, 175, 0.15);
+    color: var(--text-dim);
   }
 
   .empty {
