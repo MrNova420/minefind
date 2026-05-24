@@ -203,7 +203,7 @@
       concurrency: String(concurrency),
     });
     if (cycleType) params.set("cycle_type", cycleType);
-    else params.set("fresh", "1");
+    else if (!cycleData?.checkpoint) params.set("fresh", "1");
     if (forceProxy && proxyAddr.trim()) params.set("proxy", proxyAddr.trim());
     const res = await api(`/scan/start?${params}`, { method: "POST" });
     if (res?.ok) {

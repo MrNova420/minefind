@@ -936,9 +936,8 @@ async fn api_scan_reset(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Valu
         Ok(g) => {
             match g.as_ref().unwrap().reset_scanner_memory() {
                 Ok(_) => {
-                    // Also clear lifetime counter file
                     let _ = std::fs::write(lifetime_counter_path(), "0");
-                    log::info!("Scanner memory reset — servers kept, cycles/checkpoints cleared");
+                    log::info!("Scanner memory reset — servers kept, cycles/checkpoints/range_tracking cleared");
                     Json(serde_json::json!({"ok": true}))
                 }
                 Err(e) => Json(serde_json::json!({"error": e.to_string()})),
