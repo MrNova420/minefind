@@ -16,6 +16,7 @@
   let forceProxy = $state(false);
   let showSettings = $state(false);
   let concurrency = $state(4000);
+  let rescanAll = $state(false);
   let cycleStats = $state({ cycles: 0, total_servers_found: 0, total_targets_scanned: 0 });
   let progress = $state({ scanned_ips: 0, total_ips: 0, found_servers: 0, current_range: "", elapsed_secs: 0, cycle: 0, cycle_type: "", status: "stopped", lifetime_scanned: 0 });
   let kittyServers = $state([]);
@@ -139,6 +140,12 @@
   async function toggleForceProxy() {
     const newVal = !forceProxy;
     forceProxy = newVal;
+  }
+
+  async function toggleRescan() {
+    const newVal = !rescanAll;
+    rescanAll = newVal;
+    await api(`/settings/rescan?on=${newVal ? "1" : "0"}`, { method: "POST" });
   }
 
   async function toggleScan() {
@@ -362,6 +369,15 @@
           <span class="setting-desc">Parallel connections: {concurrency} — higher = faster, uses more bandwidth</span>
         </div>
         <input type="range" min="500" max="10000" step="100" bind:value={concurrency} disabled={scanRunning} style="width:120px;accent-color:var(--accent);" />
+      </div>
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Re-scan all ranges</span>
+          <span class="setting-desc">Rescan already-scanned /8 ranges (by default skips them)</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" checked={rescanAll} onchange={toggleRescan} disabled={scanRunning} />
+        </label>
       </div>
       {#if forceProxy && !proxyAvailable}
         <div class="warning">

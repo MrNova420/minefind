@@ -94,6 +94,7 @@ impl Database {
              CREATE INDEX IF NOT EXISTS idx_rd_found ON range_density(servers_found);
              ALTER TABLE scan_history ADD COLUMN cycle_type TEXT DEFAULT '';"
         );
+        let _ = conn.execute("ALTER TABLE range_density ADD COLUMN last_cycle_type TEXT DEFAULT ''", []);
         Ok(())
     }
 
@@ -254,16 +255,17 @@ impl Database {
 
     // --- Range Density ---
 
-    pub fn record_range_density(&self, prefix: &str, servers: i64) -> Result<()> {
+    pub fn record_range_density(&self, prefix: &str, servers: i64, cycle_type: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO range_density (ip_prefix, servers_found, cycles_scanned, last_scanned_at)
-             VALUES (?1, ?2, 1, datetime('now'))
+            "INSERT INTO range_density (ip_prefix, servers_found, cycles_scanned, last_scanned_at, last_cycle_type)
+             VALUES (?1, ?2, 1, datetime('now'), ?3)
              ON CONFLICT(ip_prefix) DO UPDATE SET
              servers_found = servers_found + excluded.servers_found,
              cycles_scanned = cycles_scanned + 1,
-             last_scanned_at = excluded.last_scanned_at",
-            params![prefix, servers],
+             last_scanned_at = excluded.last_scanned_at,
+             last_cycle_type = excluded.last_cycle_type",
+            params![prefix, servers, cycle_type],
         )?;
         Ok(())
     }
@@ -297,6 +299,19 @@ impl Database {
             "SELECT ip_prefix FROM range_density WHERE servers_found = 0 AND cycles_scanned > ?1"
         )?;
         let rows = stmt.query_map(params![empty_after], |row| row.get::<_, String>(0))?;
+        let mut result = Vec::new();
+        for r in rows {
+            if let Ok(p) = r { result.push(p); }
+        }
+        Ok(result)
+    }
+
+    pub fn get_already_scanned_prefixes(&self, cycle_type: &str) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT ip_prefix FROM range_density WHERE last_cycle_type = ?1"
+        )?;
+        let rows = stmt.query_map(params![cycle_type], |row| row.get::<_, String>(0))?;
         let mut result = Vec::new();
         for r in rows {
             if let Ok(p) = r { result.push(p); }

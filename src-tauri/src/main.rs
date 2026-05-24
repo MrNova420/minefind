@@ -43,6 +43,7 @@ struct AppCtx {
     wl_reverify_running: AtomicBool,
     wl_reverify_total: AtomicU64,
     wl_reverify_done: AtomicU64,
+    rescan_all: AtomicBool,
 }
 
 #[derive(Clone, PartialEq)]
@@ -149,6 +150,7 @@ async fn main() {
         wl_reverify_running: AtomicBool::new(false),
         wl_reverify_total: AtomicU64::new(0),
         wl_reverify_done: AtomicU64::new(0),
+        rescan_all: AtomicBool::new(false),
     });
 
     log::info!("Direct connections only. Enable proxy (Tor) in Settings for privacy.");
@@ -197,6 +199,7 @@ async fn main() {
         .route("/api/db/push/status", get(api_db_push_status))
         .route("/api/servers/reverify-wl", post(api_reverify_wl))
         .route("/api/servers/reverify-wl/status", get(api_reverify_wl_status))
+        .route("/api/settings/rescan", post(api_set_rescan))
         .layer(CorsLayer::permissive())
         .with_state(ctx);
 
@@ -322,6 +325,15 @@ async fn api_reverify_wl_status(State(ctx): State<Arc<AppCtx>>) -> Json<serde_js
         "total": ctx.wl_reverify_total.load(Ordering::SeqCst),
         "done": ctx.wl_reverify_done.load(Ordering::SeqCst),
     }))
+}
+
+async fn api_set_rescan(
+    State(ctx): State<Arc<AppCtx>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let on = params.get("on").map(|v| v == "1").unwrap_or(false);
+    ctx.rescan_all.store(on, Ordering::SeqCst);
+    Json(serde_json::json!({"rescan_all": on}))
 }
 
 async fn api_stats(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
@@ -487,7 +499,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
         let ranges = if ct.is_v6() {
             vec![] // IPv6 not iterable for now, skip
         } else {
-            build_ipv4_ranges(&db)
+            build_ipv4_ranges(&db, cycle_name, ctx.rescan_all.load(Ordering::SeqCst))
         };
 
         let total_ips: u64 = ranges.iter().map(|r| {
@@ -636,7 +648,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
 
             // Record density for this /8
             let range_found = found_count.load(Ordering::SeqCst).saturating_sub(range_found_before);
-            let _ = db.record_range_density(&range_name, range_found as i64);
+            let _ = db.record_range_density(&range_name, range_found as i64, cycle_name);
         }
 
         // Drain remaining handles
@@ -689,12 +701,21 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
     log::info!("Scanner stopped after {} cycles", global_cycle);
 }
 
-fn build_ipv4_ranges(db: &Database) -> Vec<scanner::ranges::CidrRange> {
+fn build_ipv4_ranges(db: &Database, cycle_type: &str, rescan_all: bool) -> Vec<scanner::ranges::CidrRange> {
     let skipped_prefixes: std::collections::HashSet<String> = db
         .get_skipped_prefixes(DENSITY_EMPTY_SKIP_AFTER)
         .unwrap_or_default()
         .into_iter()
         .collect();
+
+    let already_scanned: std::collections::HashSet<String> = if rescan_all {
+        std::collections::HashSet::new()
+    } else {
+        db.get_already_scanned_prefixes(cycle_type)
+            .unwrap_or_default()
+            .into_iter()
+            .collect()
+    };
 
     let priority = scanner::ranges::get_priority_ranges();
     let full = scanner::ranges::get_full_ipv4_ranges();
@@ -708,16 +729,17 @@ fn build_ipv4_ranges(db: &Database) -> Vec<scanner::ranges::CidrRange> {
     let mut all: Vec<scanner::ranges::CidrRange> = Vec::new();
     for r in &priority {
         let prefix = format!("{}.0.0.0/8", r.start.octets()[0]);
-        if !skipped_prefixes.contains(&prefix) {
+        if !skipped_prefixes.contains(&prefix) && !already_scanned.contains(&prefix) {
             all.push(r.clone());
         }
     }
 
-    // Add full ranges, skipping priority duplicates and empty /8s
+    // Add full ranges, skipping priority duplicates, empty /8s, and already-scanned
     for r in &full {
         let prefix = format!("{}.0.0.0/8", r.start.octets()[0]);
         if priority_set.contains(&prefix) { continue; }
         if skipped_prefixes.contains(&prefix) { continue; }
+        if already_scanned.contains(&prefix) { continue; }
         all.push(r.clone());
     }
 
