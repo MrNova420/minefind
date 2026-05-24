@@ -474,7 +474,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
     };
 
     // Batch DB write channel — single writer avoids Mutex contention
-    let (db_tx, mut db_rx) = tokio::sync::mpsc::channel::<ServerInfo>(10000);
+    let (db_tx, mut db_rx) = tokio::sync::mpsc::channel::<ServerInfo>(50000);
     let writer_db = db.clone();
     tokio::spawn(async move {
         while let Some(info) = db_rx.recv().await {
@@ -637,7 +637,9 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                             }
                             info.category = categorize_from_info(&info);
                             info.tags = crate::scanner::ping::generate_tags_info(&info);
-                            let _ = task_tx.send(info).await;
+                            if task_tx.try_send(info).is_err() {
+                                log::warn!("DB channel full, dropped server");
+                            }
                         }
                     }
 
