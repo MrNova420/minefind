@@ -53,8 +53,8 @@
       <div class="card-value">{formatNum(cycleData.summary?.total_targets_scanned ?? 0)}</div>
     </div>
     <div class="card">
-      <div class="card-label">Total Servers Found</div>
-      <div class="card-value green">{formatNum(cycleData.summary?.total_servers_found ?? 0)}</div>
+      <div class="card-label">Unique Servers</div>
+      <div class="card-value green">{cycleData.summary?.actual_servers ?? 0}</div>
     </div>
   </div>
 

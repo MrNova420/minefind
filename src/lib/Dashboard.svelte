@@ -97,8 +97,8 @@
       <div class="card-value">{cycleStats.cycles ?? 0}</div>
     </div>
     <div class="card">
-      <div class="card-label">Total Found (all cycles)</div>
-      <div class="card-value green">{cycleStats.total_servers_found ?? 0}</div>
+      <div class="card-label">Unique Servers</div>
+      <div class="card-value green">{cycleStats.actual_servers ?? cycleStats.total_servers_found ?? 0}</div>
     </div>
     <div class="card push-card">
       <div class="card-label">Export Database</div>

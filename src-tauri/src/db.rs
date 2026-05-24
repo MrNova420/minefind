@@ -186,10 +186,12 @@ impl Database {
         let count: u64 = conn.query_row("SELECT COUNT(*) FROM scan_history", [], |row| row.get(0))?;
         let total_servers: u64 = conn.query_row("SELECT COALESCE(SUM(servers_found), 0) FROM scan_history", [], |row| row.get(0))?;
         let total_scanned: u64 = conn.query_row("SELECT COALESCE(SUM(targets_scanned), 0) FROM scan_history", [], |row| row.get(0))?;
+        let actual_servers: i64 = conn.query_row("SELECT COUNT(*) FROM servers", [], |row| row.get(0))?;
         Ok(serde_json::json!({
             "cycles": count,
             "total_servers_found": total_servers,
             "total_targets_scanned": total_scanned,
+            "actual_servers": actual_servers,
         }))
     }
 
