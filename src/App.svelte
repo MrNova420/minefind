@@ -217,7 +217,7 @@
 
   import { onMount } from "svelte";
   onMount(async () => {
-    const [init] = await Promise.all([
+    const [init, settings] = await Promise.all([
       api("/init", { method: "POST" }),
       checkProxy(),
     ]);
@@ -226,6 +226,14 @@
       await refreshAll();
     }
     pollCycleStats();
+    // Load saved settings
+    const stg = await api("/settings");
+    if (stg) {
+      rescanAll = stg.rescan_all === true;
+      forceProxy = stg.force_proxy === true;
+      probeWhitelist = stg.probe_whitelist !== false;
+      if (stg.concurrency) concurrency = stg.concurrency;
+    }
     // Resume live polling if scan is already running
     const status = await api("/scan/status");
     if (status?.running) {

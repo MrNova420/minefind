@@ -203,6 +203,7 @@ async fn main() {
         .route("/api/servers/reverify-wl/status", get(api_reverify_wl_status))
         .route("/api/servers/dedup", post(api_dedup))
         .route("/api/settings/rescan", post(api_set_rescan))
+        .route("/api/settings", get(api_get_settings))
         .layer(CorsLayer::permissive())
         .with_state(ctx);
 
@@ -345,6 +346,15 @@ async fn api_set_rescan(
     let on = params.get("on").map(|v| v == "1").unwrap_or(false);
     ctx.rescan_all.store(on, Ordering::SeqCst);
     Json(serde_json::json!({"rescan_all": on}))
+}
+
+async fn api_get_settings(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "rescan_all": ctx.rescan_all.load(Ordering::SeqCst),
+        "force_proxy": ctx.scan_force_proxy.load(Ordering::SeqCst),
+        "probe_whitelist": ctx.scan_probe_wl.load(Ordering::SeqCst),
+        "concurrency": ctx.scan_concurrency.load(Ordering::SeqCst),
+    }))
 }
 
 async fn api_stats(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
