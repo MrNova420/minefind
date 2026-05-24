@@ -228,14 +228,14 @@
       <button
         class="nav-btn"
         class:active={currentView === "dashboard"}
-        onclick={() => (currentView = "dashboard")}
+        onclick={() => { currentView = "dashboard"; refreshAll(); pollCycleStats(); }}
       >
         Dashboard
       </button>
       <button
         class="nav-btn"
         class:active={currentView === "servers"}
-        onclick={() => (currentView = "servers")}
+        onclick={() => { currentView = "servers"; refreshAll(); if (wlReverify.running) pollWLReverify(); }}
       >
         Servers {servers.length ? `(${servers.length})` : ""}
       </button>
