@@ -75,19 +75,15 @@ impl CycleType {
         match self {
             CycleType::Ipv4Fast => "IPv4 Fast (Java+Bedrock)",
             CycleType::Ipv6Targeted => "IPv6 Targeted (port 25565)",
-            CycleType::Ipv4Deep => "IPv4 Deep (16 ports)",
-            CycleType::Ipv6Deep => "IPv6 Deep (27 ports)",
+            CycleType::Ipv4Deep => "IPv4 Deep (ALL ports)",
+            CycleType::Ipv6Deep => "IPv6 Deep (ALL ports)",
         }
     }
 
     fn ports(&self) -> Vec<u16> {
         match self {
             CycleType::Ipv4Fast | CycleType::Ipv6Targeted => vec![25565, 19132],
-            CycleType::Ipv4Deep | CycleType::Ipv6Deep => {
-                let mut p: Vec<u16> = (25560..=25575).collect();
-                p.extend(19130..=19140);
-                p
-            }
+            CycleType::Ipv4Deep | CycleType::Ipv6Deep => (1u16..=65535u16).collect(),
         }
     }
 
@@ -405,7 +401,12 @@ async fn api_serverlist_seed(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json:
 
 async fn api_serverlist_scrape(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
     let urls = vec![
-        "https://api.mcsrvstat.us/bedrock/2/play.nethergames.org",
+        "https://minecraft-server-list.com/",
+        "https://minecraft-mp.com/servers/",
+        "https://minecraft.buzz/",
+        "https://topg.org/minecraft/",
+        "https://minecraftservers.org/",
+        "https://minecraft-server.net/",
     ];
     let mut total_added: i64 = 0;
     let mut results = Vec::new();
@@ -845,8 +846,9 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                     let proxy_ref: Option<String> = proxy_for_task;
 
                     if task_deep && task_ports.len() > 2 {
-                        // Deep cycle: probe all ports concurrently
-                        let port_futures: Vec<_> = task_ports.iter().map(|&p| {
+                        // Deep cycle: probe all ports in batches of 200
+                        for chunk in task_ports.chunks(200) {
+                            let port_futures: Vec<_> = chunk.iter().map(|&p| {
                             let a = a_str.clone();
                             let px = proxy_ref.clone();
                             let c2 = c.clone();
@@ -892,6 +894,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                             info.tags = crate::scanner::ping::generate_tags_info(&info);
                             let _ = task_tx.send(info).await;
                         }
+                        } // end chunk loop
                     } else {
                         // Fast cycle: sequential ports
                         for &port in &task_ports {
@@ -1034,8 +1037,9 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                     let proxy_ref: Option<String> = proxy_for_task;
 
                     if task_deep && task_ports.len() > 2 {
-                        // Deep cycle: probe all ports concurrently
-                        let port_futures: Vec<_> = task_ports.iter().map(|&p| {
+                        // Deep cycle: probe all ports in batches of 200
+                        for chunk in task_ports.chunks(200) {
+                            let port_futures: Vec<_> = chunk.iter().map(|&p| {
                             let a = a_str.clone();
                             let px = proxy_ref.clone();
                             let c2 = c.clone();
@@ -1081,6 +1085,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                             info.tags = crate::scanner::ping::generate_tags_info(&info);
                             let _ = task_tx.send(info).await;
                         }
+                        } // end chunk loop
                     } else {
                         // Fast cycle: sequential ports
                     for &port in &task_ports {
