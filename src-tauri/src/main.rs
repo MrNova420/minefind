@@ -161,7 +161,7 @@ async fn main() {
         wl_reverify_running: AtomicBool::new(false),
         wl_reverify_total: AtomicU64::new(0),
         wl_reverify_done: AtomicU64::new(0),
-        rescan_all: AtomicBool::new(false),
+        rescan_all: AtomicBool::new(true),
         start_fresh: AtomicBool::new(false),
         cycle_enabled_ipv4_fast: AtomicBool::new(true),
         cycle_enabled_ipv6_targeted: AtomicBool::new(true),

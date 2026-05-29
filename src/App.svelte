@@ -17,7 +17,7 @@
   let forceProxy = $state(false);
   let showSettings = $state(false);
   let concurrency = $state(4000);
-  let rescanAll = $state(false);
+  let rescanAll = $state(true);
   let cycleToggles = $state({ ipv4_fast: true, ipv6_targeted: true, ipv4_deep: true, ipv6_deep: true });
   let cycleStats = $state({ cycles: 0, total_servers_found: 0, total_targets_scanned: 0 });
   let progress = $state({ scanned_ips: 0, total_ips: 0, found_servers: 0, current_range: "", elapsed_secs: 0, cycle: 0, cycle_type: "", status: "stopped", lifetime_scanned: 0 });
