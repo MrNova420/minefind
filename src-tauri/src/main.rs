@@ -203,6 +203,17 @@ async fn main() {
         Err(e) => log::error!("ServerList DB init: {}", e),
     }
 
+    // Auto-detect IPv6 connectivity
+    let has_ipv6 = tokio::net::TcpStream::connect("[2a01:4f8::1]:22")
+        .await
+        .ok()
+        .is_some();
+    if !has_ipv6 {
+        ctx.cycle_enabled_ipv6_targeted.store(false, Ordering::SeqCst);
+        ctx.cycle_enabled_ipv6_deep.store(false, Ordering::SeqCst);
+        log::warn!("IPv6 not available — IPv6 cycles auto-disabled");
+    }
+
     let app = Router::new()
         .route("/api/init", post(api_init))
         .route("/api/servers", get(api_servers))
@@ -417,6 +428,7 @@ async fn api_set_rescan(
 }
 
 async fn api_get_settings(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
+    let has_ipv6 = ctx.cycle_enabled_ipv6_targeted.load(Ordering::SeqCst) || ctx.cycle_enabled_ipv6_deep.load(Ordering::SeqCst);
     Json(serde_json::json!({
         "rescan_all": ctx.rescan_all.load(Ordering::SeqCst),
         "force_proxy": ctx.scan_force_proxy.load(Ordering::SeqCst),
@@ -426,6 +438,7 @@ async fn api_get_settings(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Va
         "cycle_ipv6_targeted": ctx.cycle_enabled_ipv6_targeted.load(Ordering::SeqCst),
         "cycle_ipv4_deep": ctx.cycle_enabled_ipv4_deep.load(Ordering::SeqCst),
         "cycle_ipv6_deep": ctx.cycle_enabled_ipv6_deep.load(Ordering::SeqCst),
+        "has_ipv6": has_ipv6,
     }))
 }
 
@@ -868,6 +881,14 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                     }
                     } // end else (fast/sequential)
                     if found_this_ip > 0 { fc.fetch_add(found_this_ip, Ordering::SeqCst); }
+                    // Progressive discovery: probe nearby ports after finding a server
+                    let deep = task_deep;
+                    let ip = a_str.clone();
+                    let tx = task_tx.clone();
+                    tokio::spawn(async move {
+                        let nearby = scanner::ping::discover_nearby_ports(&ip, 25565, deep).await;
+                        for info in nearby { let _ = tx.send(info).await; }
+                    });
                 }));
 
                 scanned_ips += 1;
@@ -1056,6 +1077,14 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                     if found_this_ip > 0 {
                         fc.fetch_add(found_this_ip, Ordering::SeqCst);
                     }
+                    // Progressive discovery
+                    let deep = task_deep;
+                    let ip = a_str.clone();
+                    let tx = task_tx.clone();
+                    tokio::spawn(async move {
+                        let nearby = scanner::ping::discover_nearby_ports(&ip, 25565, deep).await;
+                        for info in nearby { let _ = tx.send(info).await; }
+                    });
                 }));
 
                 scanned_ips += 1;

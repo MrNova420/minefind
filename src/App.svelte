@@ -18,6 +18,7 @@
   let concurrency = $state(6000);
   let rescanAll = $state(true);
   let cycleToggles = $state({ ipv4_fast: true, ipv6_targeted: true, ipv4_deep: true, ipv6_deep: true });
+  let hasIpv6 = $state(true);
   let cycleStats = $state({ cycles: 0, total_servers_found: 0, total_targets_scanned: 0 });
   let progress = $state({ scanned_ips: 0, total_ips: 0, found_servers: 0, current_range: "", elapsed_secs: 0, cycle: 0, cycle_type: "", status: "stopped", lifetime_scanned: 0 });
   let kittyServers = $state([]);
@@ -279,6 +280,7 @@
         ipv4_deep: stg.cycle_ipv4_deep !== false,
         ipv6_deep: stg.cycle_ipv6_deep !== false,
       };
+      hasIpv6 = stg.has_ipv6 !== false;
     }
     // Resume live polling if scan is already running
     const status = await api("/scan/status");
@@ -517,6 +519,12 @@
           <input type="checkbox" checked={cycleToggles.ipv6_deep} onchange={() => toggleCycle('ipv6_deep')} disabled={scanRunning} />
         </label>
       </div>
+      {#if !hasIpv6}
+        <div class="warning">
+          IPv6 not detected on this network. IPv6 cycles auto-disabled.
+          Enable IPv6 on your router or use a proxy with IPv6 support.
+        </div>
+      {/if}
       <div class="setting-row">
         <div class="setting-info">
           <span class="setting-label">Reset Scanner Memory</span>
