@@ -29,6 +29,12 @@ impl Database {
         Ok(db)
     }
 
+    pub fn wal_checkpoint_truncate(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize;")?;
+        Ok(())
+    }
+
     fn init_tables(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;

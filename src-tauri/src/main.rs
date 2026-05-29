@@ -211,6 +211,26 @@ async fn main() {
         .join("minefind");
     std::fs::create_dir_all(&data_dir).ok();
 
+    // Restore bundled DBs to runtime if missing (first launch / corruption recovery)
+    if let Some(project_data) = project_data_dir() {
+        for name in &["servers.db", "kitty.db", "serverlists.db"] {
+            let runtime = data_dir.join(name);
+            let bundled = project_data.join(name);
+            if !runtime.exists() && bundled.exists() {
+                if let Err(e) = std::fs::copy(&bundled, &runtime) {
+                    log::error!("Restore bundled {}: {}", name, e);
+                } else {
+                    log::info!("Restored {} from bundled copy", name);
+                }
+            }
+        }
+        let lc_runtime = data_dir.join("lifetime_counter.txt");
+        if !lc_runtime.exists() {
+            let lc_bundled = project_data.join("lifetime_counter.txt");
+            let _ = std::fs::copy(&lc_bundled, &lc_runtime);
+        }
+    }
+
     match Database::new(data_dir.join("servers.db").to_str().unwrap()) {
         Ok(db) => {
             let count = db.get_server_count().unwrap_or(0);
@@ -847,6 +867,10 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
         let sem = Arc::new(tokio::sync::Semaphore::new(concurrency));
         let mut handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
         let mut last_checkpoint_at: u64 = scanned_ips;
+        let mut last_backup_time = Instant::now();
+        let mut found_at_last_backup: u64 = found_count.load(Ordering::SeqCst);
+        const BACKUP_INTERVAL: Duration = Duration::from_secs(300); // 5 min
+        const NEW_SERVER_BACKUP_THRESHOLD: u64 = 50;
 
         // Save checkpoint at start so resume always works
         let _ = db.save_checkpoint(cycle_name, global_cycle, 0, scanned_ips, found_count.load(Ordering::SeqCst));
@@ -1198,6 +1222,20 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                         p.found_servers = found_count.load(Ordering::SeqCst);
                     }
                     *ctx.stats_cache.lock().unwrap() = None;
+                    // Periodic backup every 5 min
+                    if last_backup_time.elapsed() >= BACKUP_INTERVAL {
+                        let _ = db.wal_checkpoint_truncate();
+                        backup_runtime_to_data();
+                        last_backup_time = Instant::now();
+                        found_at_last_backup = found_count.load(Ordering::SeqCst);
+                    }
+                    // Backup every 50 new servers
+                    let current_found = found_count.load(Ordering::SeqCst);
+                    if current_found.saturating_sub(found_at_last_backup) >= NEW_SERVER_BACKUP_THRESHOLD {
+                        let _ = db.wal_checkpoint_truncate();
+                        backup_runtime_to_data();
+                        found_at_last_backup = current_found;
+                    }
                     tokio::task::yield_now().await;
                 }
 
@@ -1243,6 +1281,8 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
         save_lifetime(scanned_ips);
         if !was_cancelled {
             let _ = db.clear_checkpoint();
+            let _ = db.wal_checkpoint_truncate();
+            backup_runtime_to_data();
         } else {
             // Save final position on cancel
             let _ = db.save_checkpoint(cycle_name, global_cycle, 0, scanned_ips, total_found);
@@ -1517,6 +1557,52 @@ fn load_lifetime() -> u64 {
         .ok()
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(0)
+}
+
+fn project_data_dir() -> Option<std::path::PathBuf> {
+    if let Ok(d) = std::env::var("MINEFIND_DATA") {
+        let p = std::path::PathBuf::from(&d);
+        if p.is_dir() { return Some(p); }
+    }
+    let frontend = std::path::PathBuf::from(
+        std::env::var("MINEFIND_FRONTEND").unwrap_or_else(|_| "../dist".to_string())
+    );
+    let candidate = frontend.parent().map(|p| p.join("data"));
+    if let Some(ref p) = candidate { if p.is_dir() { return Some(p.to_path_buf()); } }
+    if let Ok(exe) = std::env::current_exe() {
+        for ancestor in exe.ancestors().skip(3).take(5) {
+            let p = ancestor.join("data");
+            if p.is_dir() { return Some(p); }
+        }
+    }
+    let cwd_data = std::path::PathBuf::from("data");
+    if cwd_data.is_dir() { return Some(cwd_data); }
+    None
+}
+
+fn backup_runtime_to_data() {
+    let Some(project_data) = project_data_dir() else {
+        log::warn!("Cannot find project data/ directory for backup");
+        return;
+    };
+    let Some(data_dir) = dirs_next::data_dir() else { return };
+    let runtime = data_dir.join("minefind");
+    let dbs = &["servers.db", "kitty.db", "serverlists.db"];
+    for name in dbs {
+        let src = runtime.join(name);
+        let dst = project_data.join(name);
+        if src.exists() {
+            if let Err(e) = std::fs::copy(&src, &dst) {
+                log::error!("Backup {} -> {}: {}", name, dst.display(), e);
+            } else {
+                log::info!("Backed up {}", name);
+            }
+        }
+    }
+    let lc_src = runtime.join("lifetime_counter.txt");
+    if lc_src.exists() {
+        let _ = std::fs::copy(&lc_src, project_data.join("lifetime_counter.txt"));
+    }
 }
 
 const DB_REPO_URL: &str = "https://github.com/MrNova420/minefind-database.git";
