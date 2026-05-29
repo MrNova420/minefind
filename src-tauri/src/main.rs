@@ -83,7 +83,44 @@ impl CycleType {
     fn ports(&self) -> Vec<u16> {
         match self {
             CycleType::Ipv4Fast | CycleType::Ipv6Targeted => vec![25565, 19132],
-            CycleType::Ipv4Deep | CycleType::Ipv6Deep => (1u16..=65535u16).collect(),
+            CycleType::Ipv4Deep | CycleType::Ipv6Deep => {
+                // Priority order: most likely MC ports first, then everything else
+                let priority: &[u16] = &[
+                    // Tier 1: defaults
+                    25565, 19132,
+                    // Tier 2: Java alternatives
+                    25566, 25567, 25568, 25569, 25570, 25571, 25572, 25573, 25574, 25575,
+                    // Tier 3: Bedrock alternatives
+                    19133, 19134, 19135, 19136, 19137, 19138, 19139, 19140,
+                    // Tier 4: other common gaming ports
+                    25576, 25577, 25578, 25579, 25580, 25581, 25582, 25583, 25584, 25585,
+                    25586, 25587, 25588, 25589, 25590, 25591, 25592, 25593, 25594, 25595,
+                    25596, 25597, 25598, 25599, 25600,
+                    // Tier 5: common web/admin ports (Dynmap, reverse proxy)
+                    80, 443, 8080, 8081, 8082, 8083, 8084, 8085, 8086, 8087, 8088, 8089, 8090,
+                    8443, 8880, 8888,
+                    // Tier 6: common game server ports spectrum
+                    27015, 27016, 27017, 27018, 27019, 27020,     // SRCDS range
+                    7777, 7778, 7779, 7780,                         // Unreal engine
+                    15000, 15001, 15002, 15003,                     // Various game servers
+                    5000, 5001, 5002,                               // Minecraft PocketMine old
+                    19130, 19131,                                   // MC Bedrock edge
+                    19141, 19142, 19143, 19144, 19145,             // Bedrock extended
+                    25564,                                          // Java edge case
+                ];
+                let mut used = vec![false; 65536];
+                let mut ports: Vec<u16> = Vec::with_capacity(65535);
+                for &p in priority {
+                    if p > 0 && (p as usize) < 65536 && !used[p as usize] {
+                        used[p as usize] = true;
+                        ports.push(p);
+                    }
+                }
+                for p in 1u16..=65535u16 {
+                    if !used[p as usize] { ports.push(p); }
+                }
+                ports
+            }
         }
     }
 
