@@ -11,11 +11,19 @@ const PROTOCOL_VERSIONS: &[(i32, &str)] = &[
     (767, "1.21"),
     (766, "1.20.6"),
     (765, "1.20.4"),
+    (763, "1.20.1"),
     (757, "1.18"),
-    (498, "1.14"),
-    (340, "1.12"),
+    (754, "1.16.5"),
+    (735, "1.16"),
+    (578, "1.15.2"),
+    (498, "1.14.4"),
+    (404, "1.13.2"),
+    (340, "1.12.2"),
+    (316, "1.11.2"),
     (210, "1.10"),
-    (47, "1.8"),
+    (110, "1.9.4"),
+    (47, "1.8.9"),
+    (5, "1.7.10"),
 ];
 
 fn write_varint(buf: &mut Vec<u8>, mut value: i32) {
@@ -200,7 +208,63 @@ async fn ping_server_via_proxy_inner(ip: &str, port: u16, proxy: Option<&str>, p
         }
     }
 
+    // Try legacy ping (pre-1.7) as final fallback
+    if let Ok(legacy) = ping_legacy_fallback(ip, port, start).await {
+        return Ok(legacy);
+    }
+
     Err(last_err)
+}
+
+/// Legacy ping with fresh TCP connection (pre-1.7 Minecraft)
+async fn ping_legacy_fallback(ip: &str, port: u16, start: std::time::Instant) -> Result<ServerInfo, String> {
+    let tcp = match timeout(PING_TIMEOUT_FAST, TcpStream::connect((ip, port))).await {
+        Ok(Ok(s)) => s,
+        _ => return Err("legacy connect failed".into()),
+    };
+    let _ = tcp.set_nodelay(true);
+    let (mut reader, mut writer) = tcp.into_split();
+
+    // Send 0xFE byte (legacy server list ping)
+    if timeout(PING_TIMEOUT_FAST, writer.write_all(&[0xFEu8])).await.is_err() {
+        return Err("legacy write failed".into());
+    }
+
+    // Read header: 0xFF + 2-byte BE length
+    let mut header = [0u8; 3];
+    if timeout(PING_TIMEOUT_FAST, reader.read_exact(&mut header)).await.is_err() {
+        return Err("legacy read header failed".into());
+    }
+    if header[0] != 0xFF {
+        return Err(format!("legacy packet ID: {}", header[0]));
+    }
+    let str_len = ((header[1] as usize) << 8) | (header[2] as usize);
+    if str_len == 0 || str_len > 4096 { return Err("legacy len invalid".into()); }
+
+    let mut str_data = vec![0u8; str_len * 2];
+    if timeout(PING_TIMEOUT_FAST, reader.read_exact(&mut str_data)).await.is_err() {
+        return Err("legacy read str failed".into());
+    }
+
+    let utf16: Vec<u16> = str_data.chunks(2).map(|c| ((c[0] as u16) << 8) | (c[1] as u16)).collect();
+    let resp = String::from_utf16(&utf16).map_err(|_| "legacy utf16")?;
+    let parts: Vec<&str> = resp.split('§').collect();
+
+    let ping_ms = start.elapsed().as_millis() as i64;
+    let now = chrono::Utc::now().to_rfc3339();
+
+    Ok(ServerInfo {
+        ip: ip.to_string(), port,
+        motd: parts.first().unwrap_or(&"").to_string(),
+        version: "legacy".to_string(), protocol: -1,
+        online_players: parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0),
+        max_players: parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0),
+        ping_ms, modded: false, mod_list: vec![],
+        whitelisted: None,
+        category: ServerCategory::from_str("unknown"),
+        tags: vec!["legacy".to_string()],
+        player_sample: vec![], last_seen: now.clone(), first_seen: now,
+    })
 }
 
 fn parse_ping_response(

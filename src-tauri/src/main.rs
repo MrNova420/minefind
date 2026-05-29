@@ -39,6 +39,7 @@ struct AppCtx {
     stats_cache: std::sync::Mutex<Option<serde_json::Value>>,
     start_cycle_type: std::sync::Mutex<Option<String>>,
     kitty_ctx: kitty::KittyCtx,
+    serverlist_db: std::sync::Mutex<Option<scanner::serverlists::ServerListDB>>,
     db_push_running: AtomicBool,
     db_push_status: std::sync::Mutex<String>,
     wl_reverify_running: AtomicBool,
@@ -156,6 +157,7 @@ async fn main() {
         stats_cache: std::sync::Mutex::new(None),
         start_cycle_type: std::sync::Mutex::new(None),
         kitty_ctx: kitty::KittyCtx::new(),
+        serverlist_db: std::sync::Mutex::new(None),
         db_push_running: AtomicBool::new(false),
         db_push_status: std::sync::Mutex::new(String::new()),
         wl_reverify_running: AtomicBool::new(false),
@@ -193,6 +195,14 @@ async fn main() {
         Err(e) => log::error!("Kitty DB init: {}", e),
     }
 
+    match scanner::serverlists::ServerListDB::new(data_dir.join("serverlists.db").to_str().unwrap()) {
+        Ok(sdb) => {
+            log::info!("ServerList DB ready");
+            *ctx.serverlist_db.lock().unwrap() = Some(sdb);
+        }
+        Err(e) => log::error!("ServerList DB init: {}", e),
+    }
+
     let app = Router::new()
         .route("/api/init", post(api_init))
         .route("/api/servers", get(api_servers))
@@ -212,6 +222,8 @@ async fn main() {
         .route("/api/kitty/list", get(kitty::api_kitty_list))
         .route("/api/kitty/stats", get(kitty::api_kitty_stats))
         .route("/api/kitty/status", get(kitty::api_kitty_status))
+        .route("/api/serverlist/seed", post(api_serverlist_seed))
+        .route("/api/serverlist/stats", get(api_serverlist_stats))
         .route("/api/db/push", post(api_db_push))
         .route("/api/db/push/status", get(api_db_push_status))
         .route("/api/servers/reverify-wl", post(api_reverify_wl))
@@ -355,6 +367,33 @@ async fn api_dedup(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
         Err(e) => serde_json::json!({"error": e}),
     };
     Json(result)
+}
+
+async fn api_serverlist_seed(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
+    let data_dir = dirs_next::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("minefind");
+    let servers_path = data_dir.join("servers.db");
+    match scanner::serverlists::seed_from_existing(servers_path.to_str().unwrap_or("")) {
+        Ok(seeds) => {
+            let guard = ctx.serverlist_db.lock().unwrap();
+            if let Some(ref sdb) = *guard {
+                match sdb.merge_ips(&seeds, "seed") {
+                    Ok((added, total)) => Json(serde_json::json!({"ok": true, "seeded": seeds.len(), "added": added, "total": total})),
+                    Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+                }
+            } else {
+                Json(serde_json::json!({"error": "ServerList DB not ready"}))
+            }
+        }
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn api_serverlist_stats(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
+    let guard = ctx.serverlist_db.lock().unwrap();
+    match guard.as_ref() {
+        Some(sdb) => Json(serde_json::json!({"total": sdb.count().unwrap_or(0)})),
+        None => Json(serde_json::json!({"total": 0})),
+    }
 }
 
 async fn api_set_rescan(
