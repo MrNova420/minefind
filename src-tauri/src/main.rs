@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod scanner;
 mod db;
 mod proxy;
@@ -128,6 +126,7 @@ impl CycleType {
         matches!(self, CycleType::Ipv6Targeted | CycleType::Ipv6Deep)
     }
 
+    #[allow(dead_code)]
     fn is_deep(&self) -> bool {
         matches!(self, CycleType::Ipv4Deep | CycleType::Ipv6Deep)
     }
@@ -270,13 +269,11 @@ async fn main() {
     let app = Router::new()
         .route("/api/init", post(api_init))
         .route("/api/servers", get(api_servers))
-        .route("/api/servers/count", get(api_count))
         .route("/api/stats", get(api_stats))
         .route("/api/scan/start", post(api_scan_start))
         .route("/api/scan/cancel", post(api_scan_cancel))
         .route("/api/scan/status", get(api_scan_status))
         .route("/api/scan/cycles", get(api_scan_cycles))
-        .route("/api/scan/concurrency", post(api_set_concurrency))
         .route("/api/scan/reset", post(api_scan_reset))
         .route("/api/proxy/status", get(api_proxy_status))
         .route("/api/proxy/detect", post(api_proxy_detect))
@@ -286,7 +283,6 @@ async fn main() {
         .route("/api/kitty/list", get(kitty::api_kitty_list))
         .route("/api/kitty/stats", get(kitty::api_kitty_stats))
         .route("/api/kitty/status", get(kitty::api_kitty_status))
-        .route("/api/serverlist/seed", post(api_serverlist_seed))
         .route("/api/serverlist/scrape", post(api_serverlist_scrape))
         .route("/api/serverlist/list", get(api_serverlist_list))
         .route("/api/serverlist/stats", get(api_serverlist_stats))
@@ -354,15 +350,6 @@ async fn api_servers(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> 
         Err(e) => Json(serde_json::json!({"error":e.to_string()})),
     }
 }
-
-async fn api_count(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
-    let g = match get_db(&ctx) {
-        Ok(g) => g,
-        Err(e) => return Json(serde_json::json!({"error":e})),
-    };
-    Json(serde_json::json!({"count": g.as_ref().unwrap().get_server_count().unwrap_or(0)}))
-}
-
 async fn api_reverify_wl(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
     if ctx.wl_reverify_running.load(Ordering::SeqCst) {
         return Json(serde_json::json!({"error": "already running"}));
@@ -436,26 +423,6 @@ async fn api_dedup(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
     };
     Json(result)
 }
-
-async fn api_serverlist_seed(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
-    let data_dir = dirs_next::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("minefind");
-    let servers_path = data_dir.join("servers.db");
-    match scanner::serverlists::seed_from_existing(servers_path.to_str().unwrap_or("")) {
-        Ok(seeds) => {
-            let guard = ctx.serverlist_db.lock().unwrap();
-            if let Some(ref sdb) = *guard {
-                match sdb.merge_ips(&seeds, "seed") {
-                    Ok((added, total)) => Json(serde_json::json!({"ok": true, "seeded": seeds.len(), "added": added, "total": total})),
-                    Err(e) => Json(serde_json::json!({"error": e.to_string()})),
-                }
-            } else {
-                Json(serde_json::json!({"error": "ServerList DB not ready"}))
-            }
-        }
-        Err(e) => Json(serde_json::json!({"error": e})),
-    }
-}
-
 async fn api_serverlist_scrape(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
     let urls = vec![
         "https://minecraft-server-list.com/",
@@ -869,8 +836,10 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
         let mut last_checkpoint_at: u64 = scanned_ips;
         let mut last_backup_time = Instant::now();
         let mut found_at_last_backup: u64 = found_count.load(Ordering::SeqCst);
+        let mut last_cache_invalidate = Instant::now();
         const BACKUP_INTERVAL: Duration = Duration::from_secs(300); // 5 min
         const NEW_SERVER_BACKUP_THRESHOLD: u64 = 50;
+        const CACHE_INVALIDATE_INTERVAL: Duration = Duration::from_secs(30);
 
         // Save checkpoint at start so resume always works
         let _ = db.save_checkpoint(cycle_name, global_cycle, 0, scanned_ips, found_count.load(Ordering::SeqCst));
@@ -902,7 +871,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                 let task_deep = is_deep;
 
                 handles.push(tokio::spawn(async move {
-                    drop(permit); // Release semaphore immediately — join_all holds the real work
+                    let _permit = permit;
                     let mut found_this_ip: u64 = 0;
                     let proxy_ref: Option<String> = proxy_for_task;
 
@@ -1005,12 +974,12 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                     } // end else (fast/sequential)
                     if found_this_ip > 0 { fc.fetch_add(found_this_ip, Ordering::SeqCst); }
                     // Progressive discovery: probe nearby ports after finding a server
-                    let deep = task_deep;
-                    let ip = a_str.clone();
-                    let tx = task_tx.clone();
+                    let deep2 = task_deep;
+                    let ip2 = a_str.clone();
+                    let tx2 = task_tx.clone();
                     tokio::spawn(async move {
-                        let nearby = scanner::ping::discover_nearby_ports(&ip, 25565, deep).await;
-                        for info in nearby { let _ = tx.send(info).await; }
+                        let nearby = scanner::ping::discover_nearby_ports(&ip2, 25565, deep2).await;
+                        for info in nearby { let _ = tx2.send(info).await; }
                     });
                 }));
 
@@ -1022,7 +991,10 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                         p.scanned_ips = scanned_ips;
                         p.found_servers = found_count.load(Ordering::SeqCst);
                     }
-                    *ctx.stats_cache.lock().unwrap() = None;
+                    if last_cache_invalidate.elapsed() >= CACHE_INVALIDATE_INTERVAL {
+                        *ctx.stats_cache.lock().unwrap() = None;
+                        last_cache_invalidate = Instant::now();
+                    }
                     tokio::task::yield_now().await;
                 }
                 if scanned_ips.saturating_sub(last_checkpoint_at) >= SAVE_CHECKPOINT_EVERY {
@@ -1093,7 +1065,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                 let task_deep = is_deep;
 
                 handles.push(tokio::spawn(async move {
-                    drop(permit); // Release semaphore immediately — join_all holds the real work
+                    let _permit = permit;
                     let mut found_this_ip: u64 = 0;
                     let proxy_ref: Option<String> = proxy_for_task;
 
@@ -1221,19 +1193,22 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                         p.scanned_ips = scanned_ips;
                         p.found_servers = found_count.load(Ordering::SeqCst);
                     }
-                    *ctx.stats_cache.lock().unwrap() = None;
+                    if last_cache_invalidate.elapsed() >= CACHE_INVALIDATE_INTERVAL {
+                        *ctx.stats_cache.lock().unwrap() = None;
+                        last_cache_invalidate = Instant::now();
+                    }
                     // Periodic backup every 5 min
                     if last_backup_time.elapsed() >= BACKUP_INTERVAL {
-                        let _ = db.wal_checkpoint_truncate();
-                        backup_runtime_to_data();
+                        wal_checkpoint_backup(&db).await;
+                        backup_runtime_to_data().await;
                         last_backup_time = Instant::now();
                         found_at_last_backup = found_count.load(Ordering::SeqCst);
                     }
                     // Backup every 50 new servers
                     let current_found = found_count.load(Ordering::SeqCst);
                     if current_found.saturating_sub(found_at_last_backup) >= NEW_SERVER_BACKUP_THRESHOLD {
-                        let _ = db.wal_checkpoint_truncate();
-                        backup_runtime_to_data();
+                        wal_checkpoint_backup(&db).await;
+                        backup_runtime_to_data().await;
                         found_at_last_backup = current_found;
                     }
                     tokio::task::yield_now().await;
@@ -1278,11 +1253,11 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
             }
         }
         // Fallback lifetime counter — survives DB failures
-        save_lifetime(scanned_ips);
+        save_lifetime(scanned_ips).await;
         if !was_cancelled {
             let _ = db.clear_checkpoint();
-            let _ = db.wal_checkpoint_truncate();
-            backup_runtime_to_data();
+            wal_checkpoint_backup(&db).await;
+            backup_runtime_to_data().await;
         } else {
             // Save final position on cancel
             let _ = db.save_checkpoint(cycle_name, global_cycle, 0, scanned_ips, total_found);
@@ -1297,6 +1272,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
             p.status = "waiting".to_string();
         }
         *ctx.stats_cache.lock().unwrap() = None;
+        last_cache_invalidate = Instant::now();
 
         // Advance to next cycle type (only in auto-rotation mode)
         if !pinned_cycle {
@@ -1452,17 +1428,6 @@ async fn api_scan_status(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Val
         "elapsed_secs": elapsed,
     }))
 }
-
-async fn api_set_concurrency(
-    State(ctx): State<Arc<AppCtx>>,
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Json<serde_json::Value> {
-    let n = params.get("n").and_then(|v| v.parse::<u64>().ok()).unwrap_or(4000).max(100).min(10000);
-    ctx.scan_concurrency.store(n, Ordering::SeqCst);
-    log::info!("Scan concurrency set to {}", n);
-    Json(serde_json::json!({"concurrency": n}))
-}
-
 async fn api_scan_reset(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
     if ctx.scan_running.load(Ordering::SeqCst) {
         return Json(serde_json::json!({"error": "cannot reset while scanning"}));
@@ -1541,14 +1506,15 @@ fn lifetime_counter_path() -> std::path::PathBuf {
         .join("lifetime_counter.txt")
 }
 
-fn save_lifetime(count: u64) {
-    if let Ok(s) = std::fs::read_to_string(lifetime_counter_path()) {
+async fn save_lifetime(count: u64) {
+    let path = lifetime_counter_path();
+    if let Ok(s) = tokio::fs::read_to_string(&path).await {
         let old: u64 = s.trim().parse().unwrap_or(0);
         if count > old {
-            std::fs::write(lifetime_counter_path(), count.to_string()).ok();
+            let _ = tokio::fs::write(&path, count.to_string()).await;
         }
     } else {
-        std::fs::write(lifetime_counter_path(), count.to_string()).ok();
+        let _ = tokio::fs::write(&path, count.to_string()).await;
     }
 }
 
@@ -1580,7 +1546,7 @@ fn project_data_dir() -> Option<std::path::PathBuf> {
     None
 }
 
-fn backup_runtime_to_data() {
+async fn backup_runtime_to_data() {
     let Some(project_data) = project_data_dir() else {
         log::warn!("Cannot find project data/ directory for backup");
         return;
@@ -1592,7 +1558,7 @@ fn backup_runtime_to_data() {
         let src = runtime.join(name);
         let dst = project_data.join(name);
         if src.exists() {
-            if let Err(e) = std::fs::copy(&src, &dst) {
+            if let Err(e) = tokio::fs::copy(&src, &dst).await {
                 log::error!("Backup {} -> {}: {}", name, dst.display(), e);
             } else {
                 log::info!("Backed up {}", name);
@@ -1601,8 +1567,17 @@ fn backup_runtime_to_data() {
     }
     let lc_src = runtime.join("lifetime_counter.txt");
     if lc_src.exists() {
-        let _ = std::fs::copy(&lc_src, project_data.join("lifetime_counter.txt"));
+        let _ = tokio::fs::copy(&lc_src, project_data.join("lifetime_counter.txt")).await;
     }
+}
+
+async fn wal_checkpoint_backup(db: &Database) {
+    let path = db.path().to_string();
+    let _ = tokio::task::spawn_blocking(move || {
+        if let Ok(conn) = rusqlite::Connection::open(&path) {
+            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize;");
+        }
+    }).await;
 }
 
 const DB_REPO_URL: &str = "https://github.com/MrNova420/minefind-database.git";

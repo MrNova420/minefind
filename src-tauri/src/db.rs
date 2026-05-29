@@ -4,6 +4,7 @@ use std::sync::Mutex;
 
 pub struct Database {
     conn: Mutex<Connection>,
+    path: String,
 }
 
 pub struct Checkpoint {
@@ -14,31 +15,22 @@ pub struct Checkpoint {
     pub found_servers: u64,
 }
 
-#[derive(Clone)]
-pub struct RangeDensity {
-    pub ip_prefix: String,
-    pub servers_found: i64,
-    pub cycles_scanned: i64,
-}
-
 impl Database {
     pub fn new(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
-        let db = Database { conn: Mutex::new(conn) };
+        let db = Database { conn: Mutex::new(conn), path: path.to_string() };
         db.init_tables()?;
         Ok(db)
     }
 
-    pub fn wal_checkpoint_truncate(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize;")?;
-        Ok(())
+    pub fn path(&self) -> &str {
+        &self.path
     }
 
     fn init_tables(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
-        conn.execute_batch(
+        let _ = conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS servers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ip TEXT NOT NULL,
@@ -87,16 +79,7 @@ impl Database {
                 cycles_scanned INTEGER DEFAULT 0,
                 last_scanned_at TEXT
             );
-            CREATE TABLE IF NOT EXISTS activity_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                server_id INTEGER REFERENCES servers(id),
-                recorded_at TEXT NOT NULL,
-                online_players INTEGER,
-                ping_ms INTEGER
-            );"
-        )?;
-        let _ = conn.execute_batch(
-            "            CREATE TABLE IF NOT EXISTS pending_recheck (
+            CREATE TABLE IF NOT EXISTS pending_recheck (
                 ip TEXT NOT NULL,
                 port INTEGER NOT NULL DEFAULT 25565,
                 attempts INTEGER DEFAULT 0,
@@ -105,8 +88,8 @@ impl Database {
                 PRIMARY KEY (ip, port)
             );
             CREATE INDEX IF NOT EXISTS idx_rd_prefix ON range_density(ip_prefix);
-             CREATE INDEX IF NOT EXISTS idx_rd_found ON range_density(servers_found);
-             ALTER TABLE scan_history ADD COLUMN cycle_type TEXT DEFAULT '';"
+            CREATE INDEX IF NOT EXISTS idx_rd_found ON range_density(servers_found);
+            ALTER TABLE scan_history ADD COLUMN cycle_type TEXT DEFAULT '';"
         );
         let _ = conn.execute("ALTER TABLE range_density ADD COLUMN last_cycle_type TEXT DEFAULT ''", []);
         Ok(())
@@ -188,11 +171,6 @@ impl Database {
             params![scanned, found, cycle_type, started_at],
         )?;
         Ok(())
-    }
-
-    pub fn get_cycle_count(&self) -> Result<u64> {
-        let conn = self.conn.lock().unwrap();
-        conn.query_row("SELECT COUNT(*) FROM scan_history", [], |row| row.get(0))
     }
 
     pub fn get_cycle_summary(&self) -> Result<serde_json::Value> {
@@ -286,25 +264,15 @@ impl Database {
         Ok(())
     }
 
-    pub fn get_dense_ranges(&self, limit: i64, skip_empty_after: i64) -> Result<Vec<RangeDensity>> {
+    pub fn get_already_scanned_prefixes(&self, cycle_type: &str) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT ip_prefix, servers_found, cycles_scanned
-             FROM range_density
-             WHERE servers_found > 0 OR cycles_scanned <= ?2
-             ORDER BY servers_found DESC, ip_prefix ASC
-             LIMIT ?1"
+            "SELECT ip_prefix FROM range_density WHERE last_cycle_type = ?1"
         )?;
-        let rows = stmt.query_map(params![limit, skip_empty_after], |row| {
-            Ok(RangeDensity {
-                ip_prefix: row.get(0)?,
-                servers_found: row.get(1)?,
-                cycles_scanned: row.get(2)?,
-            })
-        })?;
+        let rows = stmt.query_map(params![cycle_type], |row| row.get::<_, String>(0))?;
         let mut result = Vec::new();
         for r in rows {
-            if let Ok(d) = r { result.push(d); }
+            if let Ok(p) = r { result.push(p); }
         }
         Ok(result)
     }
@@ -315,19 +283,6 @@ impl Database {
             "SELECT ip_prefix FROM range_density WHERE servers_found = 0 AND cycles_scanned > ?1"
         )?;
         let rows = stmt.query_map(params![empty_after], |row| row.get::<_, String>(0))?;
-        let mut result = Vec::new();
-        for r in rows {
-            if let Ok(p) = r { result.push(p); }
-        }
-        Ok(result)
-    }
-
-    pub fn get_already_scanned_prefixes(&self, cycle_type: &str) -> Result<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT ip_prefix FROM range_density WHERE last_cycle_type = ?1"
-        )?;
-        let rows = stmt.query_map(params![cycle_type], |row| row.get::<_, String>(0))?;
         let mut result = Vec::new();
         for r in rows {
             if let Ok(p) = r { result.push(p); }
@@ -367,18 +322,6 @@ impl Database {
     }
 
     // --- Pending Recheck (timed-out IPs) ---
-
-    pub fn add_recheck(&self, ip: &str, port: u16) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        let now = chrono::Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT OR IGNORE INTO pending_recheck (ip, port, attempts, next_check, first_seen)
-             VALUES (?1, ?2, 0, datetime('now', '+30 minutes'), ?3)
-             ON CONFLICT(ip, port) DO UPDATE SET attempts = attempts + 1, next_check = datetime('now', '+30 minutes')",
-            params![ip, port as i64, now],
-        )?;
-        Ok(())
-    }
 
     pub fn get_pending_rechecks(&self, limit: i64) -> Result<Vec<(String, u16, i64)>> {
         let conn = self.conn.lock().unwrap();

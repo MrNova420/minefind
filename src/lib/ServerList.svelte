@@ -1,5 +1,5 @@
 <script>
-  let { servers = [], wlReverify = { running: false, total: 0, done: 0 }, onReverifyWL = () => {}, onDedup = () => {} } = $props();
+  let { servers = [], wlReverify = { running: false, total: 0, done: 0 }, onReverifyWL = () => {} } = $props();
 
   let dedupResult = $state(null);
   let portFilter = $state("all");

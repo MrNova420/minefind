@@ -218,7 +218,6 @@
     if (res?.ok) {
       scanRunning = true;
       pollScan();
-      pollProgress();
       pollCycleStats();
     } else {
       alert(res?.error || "Failed to start scan");
@@ -235,28 +234,20 @@
 
   async function pollScan() {
     while (scanRunning) {
-      const status = await api("/scan/status");
-      if (!status?.running) {
+      const p = await api("/scan/status");
+      if (!p?.running) {
         scanRunning = false;
         await refreshAll();
         await api("/cache/clear", { method: "POST" });
+        progress = { scanned_ips: 0, total_ips: 0, found_servers: 0, current_range: "", elapsed_secs: 0, cycle: 0, cycle_type: "", status: "stopped", lifetime_scanned: 0 };
         break;
       }
-      await new Promise((r) => setTimeout(r, 2000));
+      progress = p;
+      const delay = p?.cycle_type?.includes("deep") ? 5000 : 2000;
+      await new Promise((r) => setTimeout(r, delay));
       const s = await api("/stats");
       if (s) stats = s;
     }
-  }
-
-  async function pollProgress() {
-    while (scanRunning) {
-      const p = await api("/scan/status");
-      if (p) progress = p;
-      // Poll slower for deep cycles (ALL ports)
-      const delay = p?.cycle_type?.includes("deep") ? 5000 : 1000;
-      await new Promise((r) => setTimeout(r, delay));
-    }
-    progress = { scanned_ips: 0, total_ips: 0, found_servers: 0, current_range: "", elapsed_secs: 0, cycle: 0, cycle_type: "", status: "stopped", lifetime_scanned: 0 };
   }
 
   import { onMount } from "svelte";
@@ -290,7 +281,6 @@
     if (status?.running) {
       scanRunning = true;
       pollScan();
-      pollProgress();
     }
   });
 

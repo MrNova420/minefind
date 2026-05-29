@@ -126,6 +126,7 @@ fn extract_ips_from_html(html: &str) -> Result<Vec<(String, u16)>, String> {
 }
 
 /// Seed from known servers (kept for backwards compat but NOT recommended)
+#[allow(dead_code)]
 pub fn seed_from_existing(db_path: &str) -> Result<Vec<(String, u16)>, String> {
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare("SELECT ip, port FROM servers ORDER BY last_seen DESC LIMIT 500")

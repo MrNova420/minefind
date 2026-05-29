@@ -2,21 +2,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
 use crate::scanner::{ServerInfo, PlayerSample, ServerCategory};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 
 const PING_TIMEOUT_FAST: Duration = Duration::from_secs(2);
 const PING_TIMEOUT_DEEP: Duration = Duration::from_secs(3);
-
-/// Compute a server identity fingerprint from MOTD + version + players
-pub fn server_fingerprint(info: &ServerInfo) -> u64 {
-    let mut h = DefaultHasher::new();
-    info.motd.hash(&mut h);
-    info.version.hash(&mut h);
-    info.online_players.hash(&mut h);
-    info.max_players.hash(&mut h);
-    h.finish()
-}
 
 /// Check additional ports on the same IP when a server is found (progressive discovery)
 pub async fn discover_nearby_ports(ip: &str, found_port: u16, deep: bool) -> Vec<ServerInfo> {
@@ -428,9 +416,6 @@ fn parse_status_json(
 
     let modded = modded || !mod_list.is_empty();
     let modded = modded || version.to_lowercase().contains("fabric") || version.to_lowercase().contains("quilt") || version.to_lowercase().contains("forge");
-
-    // Extract favicon and store it if present
-    let _favicon = parsed.get("favicon").and_then(|f| f.as_str()).unwrap_or("");
 
     let category = categorize_server(&motd, online_players, modded);
     let tags = generate_tags(&category, &version, online_players, modded, &motd);

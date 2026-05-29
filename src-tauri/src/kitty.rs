@@ -130,6 +130,7 @@ impl KittyDatabase {
         }))
     }
 
+    #[allow(dead_code)]
     pub fn get_unverified(&self) -> SqlResult<Vec<String>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT ip FROM kitty_ips WHERE verified=0 AND (ping_ms IS NULL OR ping_ms = 0)")?;

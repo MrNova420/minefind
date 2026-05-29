@@ -98,10 +98,6 @@ pub fn is_reserved(ip_u32: u32) -> bool {
     false
 }
 
-pub fn prefix_for_ip(ip_u32: u32) -> String {
-    format!("{}.0.0.0/8", (ip_u32 >> 24) as u8)
-}
-
 pub fn get_hosting_ranges() -> Vec<CidrRange> {
     vec![
         CidrRange { name: "OVH".into(), start: ip(51,81,0,0), end: ip(51,81,255,255), mask: 16 },
@@ -187,50 +183,6 @@ pub fn get_hosting_ranges() -> Vec<CidrRange> {
     ]
 }
 
-pub fn get_residential_ranges() -> Vec<CidrRange> {
-    vec![
-        CidrRange { name: "Comcast".into(), start: ip(73,15,0,0), end: ip(73,15,255,255), mask: 16 },
-        CidrRange { name: "Comcast".into(), start: ip(73,38,0,0), end: ip(73,38,255,255), mask: 16 },
-        CidrRange { name: "Comcast".into(), start: ip(73,42,0,0), end: ip(73,42,255,255), mask: 16 },
-        CidrRange { name: "Comcast".into(), start: ip(73,51,0,0), end: ip(73,51,255,255), mask: 16 },
-        CidrRange { name: "Comcast".into(), start: ip(73,103,0,0), end: ip(73,103,255,255), mask: 16 },
-        CidrRange { name: "Comcast".into(), start: ip(73,162,0,0), end: ip(73,162,255,255), mask: 16 },
-        CidrRange { name: "Comcast".into(), start: ip(73,179,0,0), end: ip(73,179,255,255), mask: 16 },
-        CidrRange { name: "Comcast".into(), start: ip(73,194,0,0), end: ip(73,194,255,255), mask: 16 },
-        CidrRange { name: "Comcast".into(), start: ip(73,240,0,0), end: ip(73,240,255,255), mask: 16 },
-        CidrRange { name: "Comcast".into(), start: ip(73,249,0,0), end: ip(73,249,255,255), mask: 16 },
-        CidrRange { name: "Comcast".into(), start: ip(98,0,0,0), end: ip(98,0,255,255), mask: 16 },
-        CidrRange { name: "Comcast".into(), start: ip(98,14,0,0), end: ip(98,14,255,255), mask: 16 },
-        CidrRange { name: "Comcast".into(), start: ip(98,28,0,0), end: ip(98,28,255,255), mask: 16 },
-        CidrRange { name: "Comcast".into(), start: ip(98,30,0,0), end: ip(98,30,255,255), mask: 16 },
-        CidrRange { name: "Verizon".into(), start: ip(100,0,0,0), end: ip(100,1,255,255), mask: 16 },
-        CidrRange { name: "Verizon".into(), start: ip(100,36,0,0), end: ip(100,36,255,255), mask: 16 },
-        CidrRange { name: "Verizon".into(), start: ip(100,38,0,0), end: ip(100,38,255,255), mask: 16 },
-        CidrRange { name: "Verizon".into(), start: ip(108,0,0,0), end: ip(108,0,255,255), mask: 16 },
-        CidrRange { name: "Verizon".into(), start: ip(108,10,0,0), end: ip(108,10,255,255), mask: 16 },
-        CidrRange { name: "Verizon".into(), start: ip(108,13,0,0), end: ip(108,13,255,255), mask: 16 },
-        CidrRange { name: "AT&T".into(), start: ip(12,180,0,0), end: ip(12,181,255,255), mask: 16 },
-        CidrRange { name: "AT&T".into(), start: ip(12,190,0,0), end: ip(12,190,255,255), mask: 16 },
-        CidrRange { name: "AT&T".into(), start: ip(99,0,0,0), end: ip(99,0,255,255), mask: 16 },
-        CidrRange { name: "AT&T".into(), start: ip(99,4,0,0), end: ip(99,4,255,255), mask: 16 },
-        CidrRange { name: "AT&T".into(), start: ip(99,6,0,0), end: ip(99,6,255,255), mask: 16 },
-        CidrRange { name: "AT&T".into(), start: ip(99,8,0,0), end: ip(99,8,255,255), mask: 16 },
-        CidrRange { name: "AT&T".into(), start: ip(99,12,0,0), end: ip(99,12,255,255), mask: 16 },
-        CidrRange { name: "Spectrum".into(), start: ip(24,24,0,0), end: ip(24,24,255,255), mask: 16 },
-        CidrRange { name: "Spectrum".into(), start: ip(24,61,0,0), end: ip(24,61,255,255), mask: 16 },
-        CidrRange { name: "Spectrum".into(), start: ip(24,62,0,0), end: ip(24,62,255,255), mask: 16 },
-        CidrRange { name: "Spectrum".into(), start: ip(24,63,0,0), end: ip(24,63,255,255), mask: 16 },
-        CidrRange { name: "Spectrum".into(), start: ip(24,93,0,0), end: ip(24,93,255,255), mask: 16 },
-        CidrRange { name: "Spectrum".into(), start: ip(24,98,0,0), end: ip(24,98,255,255), mask: 16 },
-        CidrRange { name: "Spectrum".into(), start: ip(24,99,0,0), end: ip(24,99,255,255), mask: 16 },
-        CidrRange { name: "DTAG".into(), start: ip(79,192,0,0), end: ip(79,255,255,255), mask: 16 },
-        CidrRange { name: "DTAG".into(), start: ip(80,128,0,0), end: ip(80,159,255,255), mask: 16 },
-        CidrRange { name: "Orange".into(), start: ip(90,0,0,0), end: ip(90,99,255,255), mask: 16 },
-        CidrRange { name: "Vodafone".into(), start: ip(77,96,0,0), end: ip(77,111,255,255), mask: 16 },
-        CidrRange { name: "British Telecom".into(), start: ip(81,128,0,0), end: ip(81,159,255,255), mask: 16 },
-        CidrRange { name: "KPN".into(), start: ip(77,160,0,0), end: ip(77,169,255,255), mask: 16 },
-    ]
-}
 
 fn ip(a: u8, b: u8, c: u8, d: u8) -> Ipv4Addr {
     Ipv4Addr::new(a, b, c, d)

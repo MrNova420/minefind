@@ -88,17 +88,3 @@ impl<'de> Deserialize<'de> for ServerCategory {
         Ok(ServerCategory::from_str(&s))
     }
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScanTarget {
-    pub ip: String,
-    pub port: u16,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScanProgress {
-    pub scanned: u64,
-    pub total: u64,
-    pub found: u64,
-    pub current_ip: String,
-}
