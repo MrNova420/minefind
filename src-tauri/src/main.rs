@@ -68,7 +68,7 @@ impl CycleType {
 
     fn label(&self) -> &'static str {
         match self {
-            CycleType::Ipv4Fast => "IPv4 Fast (port 25565)",
+            CycleType::Ipv4Fast => "IPv4 Fast (Java+Bedrock)",
             CycleType::Ipv6Targeted => "IPv6 Targeted (port 25565)",
             CycleType::Ipv4Deep => "IPv4 Deep (16 ports)",
             CycleType::Ipv6Deep => "IPv6 Deep (27 ports)",
@@ -77,7 +77,7 @@ impl CycleType {
 
     fn ports(&self) -> Vec<u16> {
         match self {
-            CycleType::Ipv4Fast | CycleType::Ipv6Targeted => vec![25565],
+            CycleType::Ipv4Fast | CycleType::Ipv6Targeted => vec![25565, 19132],
             CycleType::Ipv4Deep | CycleType::Ipv6Deep => {
                 let mut p: Vec<u16> = (25560..=25575).collect();
                 p.extend(19130..=19140);
@@ -681,11 +681,32 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                     for &port in &task_ports {
                         if c.load(Ordering::SeqCst) { break; }
                         let px: Option<&str> = proxy_ref.as_deref();
-                        let r = if let Some(pr) = px {
+                        let is_bedrock = port >= 19130 && port <= 19140;
+
+                        let r: Result<scanner::ServerInfo, String> = if is_bedrock {
+                            match scanner::bedrock::ping_bedrock(&a_str, port).await {
+                                Ok(bi) => {
+                                    let now = chrono::Utc::now().to_rfc3339();
+                                    Ok(scanner::ServerInfo {
+                                        ip: a_str.clone(), port,
+                                        motd: bi.motd, version: format!("Bedrock {}", bi.version),
+                                        protocol: bi.protocol, online_players: bi.online_players,
+                                        max_players: bi.max_players, ping_ms: bi.ping_ms,
+                                        modded: false, mod_list: vec![],
+                                        whitelisted: None,
+                                        category: scanner::ServerCategory::from_str("unknown"),
+                                        tags: vec!["bedrock".to_string(), bi.game_mode.clone()],
+                                        player_sample: vec![], last_seen: now.clone(), first_seen: now,
+                                    })
+                                }
+                                Err(e) => Err(e),
+                            }
+                        } else if let Some(pr) = px {
                             scanner::ping::ping_server_via_proxy(&a_str, port, Some(pr)).await
                         } else {
                             scanner::ping::ping_server(&a_str, port).await
                         };
+
                         if let Ok(mut info) = r {
                             let key = format!("{}:{}", info.ip, info.port);
                             let is_new = {

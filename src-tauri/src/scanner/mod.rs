@@ -1,6 +1,7 @@
 pub mod ping;
 pub mod probe;
 pub mod ranges;
+pub mod bedrock;
 
 use serde::{Deserialize, Serialize};
 
