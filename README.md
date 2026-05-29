@@ -28,15 +28,24 @@
 - **PC health pauses** — 15 minute cooldown every 2 hours to keep your PC usable
 
 ### Detection
-- **8 protocol versions** — tries 767 (1.21) → 766 → 765 → 757 (1.18) → 498 (1.14) → 340 (1.12) → 210 → 47 (1.8) on handshake failure
+- **16 protocol versions** — 767 (1.21) → 766 → 765 → 763 → 757 → 754 → 735 → 578 → 498 → 404 → 340 → 316 → 210 → 110 → 47 → 5 (1.7.10)
+- **Legacy ping fallback** — 0xFE byte ping for pre-1.7 Minecraft servers (UTF-16BE §-delimited)
 - **Bedrock RakNet ping** — UDP unconnected ping for Minecraft Bedrock Edition
 - **True ping measurement** — sends proper ping packet (0x01) after status for accurate RTT
 - **Dynamic timeouts** — 2s for fast cycles, 3s for deep cycles
 - **Whitelist probe** — Login attempt detection with proper packet framing, encryption request = inconclusive
+- **SRV record resolution** — DNS SRV lookups for `_minecraft._tcp.{domain}` to discover servers on non-standard ports
+- **Progressive discovery** — probes nearby ports on same IP when a server is found
+- **Server fingerprinting** — hash-based identity tracking: MOTD + version + player counts
 - **Server categorization** — Auto-tags: Vanilla Survival, Modded, Plugin Heavy, Creative, Minigame, Anarchy, Private Group, Idle
 - **Proxy detection** — Auto-detects Velocity, BungeeCord, NullCord, Geyser from version strings
 - **Mod tracking** — Forge/FML/Fabric/Quilt detection, mod list with versions
 - **MOTD parsing** — Strips Minecraft formatting codes (§), extracts text + extras from JSON chat components
+
+### Server List Sources
+- **Seed from existing DB** — Pulls known server IPs into a separate `serverlists.db` for tracking and analysis
+- **DNS SRV resolution** — `GET /api/srv/:domain` resolves Minecraft SRV records
+- **Multi-source architecture** — Server lists, DNS, and direct scanning all feed the same database
 
 ### KittyScan Blocklist Verification
 - **Separate database** — `kitty.db` completely isolated from the main `servers.db`

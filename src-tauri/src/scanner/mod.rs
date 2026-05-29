@@ -3,6 +3,7 @@ pub mod probe;
 pub mod ranges;
 pub mod bedrock;
 pub mod serverlists;
+pub mod srv;
 
 use serde::{Deserialize, Serialize};
 

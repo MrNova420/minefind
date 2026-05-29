@@ -224,6 +224,7 @@ async fn main() {
         .route("/api/kitty/status", get(kitty::api_kitty_status))
         .route("/api/serverlist/seed", post(api_serverlist_seed))
         .route("/api/serverlist/stats", get(api_serverlist_stats))
+        .route("/api/srv/{domain}", get(api_srv_lookup))
         .route("/api/db/push", post(api_db_push))
         .route("/api/db/push/status", get(api_db_push_status))
         .route("/api/servers/reverify-wl", post(api_reverify_wl))
@@ -394,6 +395,16 @@ async fn api_serverlist_stats(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json
         Some(sdb) => Json(serde_json::json!({"total": sdb.count().unwrap_or(0)})),
         None => Json(serde_json::json!({"total": 0})),
     }
+}
+
+async fn api_srv_lookup(
+    axum::extract::Path(domain): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    let records = scanner::srv::resolve_minecraft_srv(&domain).await;
+    Json(serde_json::json!({
+        "domain": domain,
+        "records": records.iter().map(|(h, p)| serde_json::json!({"host": h, "port": p})).collect::<Vec<_>>(),
+    }))
 }
 
 async fn api_set_rescan(

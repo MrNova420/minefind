@@ -2,9 +2,45 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
 use crate::scanner::{ServerInfo, PlayerSample, ServerCategory};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 const PING_TIMEOUT_FAST: Duration = Duration::from_secs(2);
 const PING_TIMEOUT_DEEP: Duration = Duration::from_secs(3);
+
+/// Compute a server identity fingerprint from MOTD + version + players
+pub fn server_fingerprint(info: &ServerInfo) -> u64 {
+    let mut h = DefaultHasher::new();
+    info.motd.hash(&mut h);
+    info.version.hash(&mut h);
+    info.online_players.hash(&mut h);
+    info.max_players.hash(&mut h);
+    h.finish()
+}
+
+/// Check additional ports on the same IP when a server is found (progressive discovery)
+pub async fn discover_nearby_ports(ip: &str, found_port: u16, deep: bool) -> Vec<ServerInfo> {
+    let extra_ports: Vec<u16> = if found_port == 25565 {
+        vec![25566, 25567, 25568, 19132, 19133]
+    } else if found_port == 19132 {
+        vec![25565, 19133, 19134]
+    } else if (19130..=19140).contains(&found_port) {
+        vec![25565, 19132]
+    } else {
+        vec![25565, 19132]
+    };
+
+    let mut results = Vec::new();
+    for port in extra_ports {
+        let r = if deep {
+            ping_server_deep(ip, port).await
+        } else {
+            ping_server(ip, port).await
+        };
+        if let Ok(info) = r { results.push(info); }
+    }
+    results
+}
 
 // Protocol versions to try, ordered from newest to oldest
 const PROTOCOL_VERSIONS: &[(i32, &str)] = &[
