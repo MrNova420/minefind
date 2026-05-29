@@ -1,4 +1,5 @@
 use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
 
 #[derive(Debug, Clone)]
 pub struct CidrRange {
@@ -48,6 +49,40 @@ pub fn get_ipv6_ranges() -> Vec<String> {
         "2a02:7aa0::/32".into(),
         "2a02:c206::/32".into(),
     ]
+}
+
+/// Generate scannable IPv6 addresses from /32 prefixes.
+/// For each prefix, iterate through /48 subnet IDs (0-65535) and generate
+/// the first N host addresses per subnet.
+pub fn get_ipv6_ips(ips_per_subnet: usize) -> Vec<String> {
+    let prefixes = get_ipv6_ranges();
+    let mut ips: Vec<String> = Vec::new();
+
+    for prefix_str in &prefixes {
+        // Parse "/32 prefix" e.g. "2a01:4f8::/32"
+        let slash_pos = prefix_str.find('/').unwrap_or(prefix_str.len());
+        let base = &prefix_str[..slash_pos];
+        if let Ok(mut addr) = base.parse::<Ipv6Addr>() {
+            // The /32 means bits 0-31 are fixed (first 4 bytes)
+            // Subnets are in bits 32-47 (next 2 bytes = 65536 values)
+            // Host portion is bits 48-127
+            let segments = addr.segments();
+            let base_prefix: [u16; 8] = [segments[0], segments[1], 0, 0, 0, 0, 0, 0];
+
+            for subnet in 0u16..=65535u16 {
+                for host in 1..=(ips_per_subnet as u16).min(4) {
+                    let ip = Ipv6Addr::new(
+                        base_prefix[0], base_prefix[1],
+                        subnet,
+                        (host >> 8) & 0xFF, (host & 0xFF) as u16,
+                        0, 0, 0,
+                    );
+                    ips.push(ip.to_string());
+                }
+            }
+        }
+    }
+    ips
 }
 
 pub fn is_reserved(ip_u32: u32) -> bool {

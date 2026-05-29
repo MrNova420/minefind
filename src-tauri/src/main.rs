@@ -46,6 +46,10 @@ struct AppCtx {
     wl_reverify_done: AtomicU64,
     rescan_all: AtomicBool,
     start_fresh: AtomicBool,
+    cycle_enabled_ipv4_fast: AtomicBool,
+    cycle_enabled_ipv6_targeted: AtomicBool,
+    cycle_enabled_ipv4_deep: AtomicBool,
+    cycle_enabled_ipv6_deep: AtomicBool,
 }
 
 #[derive(Clone, PartialEq)]
@@ -88,6 +92,10 @@ impl CycleType {
 
     fn is_v6(&self) -> bool {
         matches!(self, CycleType::Ipv6Targeted | CycleType::Ipv6Deep)
+    }
+
+    fn is_deep(&self) -> bool {
+        matches!(self, CycleType::Ipv4Deep | CycleType::Ipv6Deep)
     }
 
     fn cycle_order() -> [CycleType; 4] {
@@ -155,6 +163,10 @@ async fn main() {
         wl_reverify_done: AtomicU64::new(0),
         rescan_all: AtomicBool::new(false),
         start_fresh: AtomicBool::new(false),
+        cycle_enabled_ipv4_fast: AtomicBool::new(true),
+        cycle_enabled_ipv6_targeted: AtomicBool::new(true),
+        cycle_enabled_ipv4_deep: AtomicBool::new(true),
+        cycle_enabled_ipv6_deep: AtomicBool::new(true),
     });
 
     log::info!("Direct connections only. Enable proxy (Tor) in Settings for privacy.");
@@ -206,6 +218,7 @@ async fn main() {
         .route("/api/servers/reverify-wl/status", get(api_reverify_wl_status))
         .route("/api/servers/dedup", post(api_dedup))
         .route("/api/settings/rescan", post(api_set_rescan))
+        .route("/api/settings/cycle", post(api_set_cycle_toggle))
         .route("/api/settings", get(api_get_settings))
         .route("/api/settings/force-proxy", post(api_set_force_proxy))
         .route("/api/settings/probe-wl", post(api_set_probe_wl))
@@ -359,7 +372,27 @@ async fn api_get_settings(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Va
         "force_proxy": ctx.scan_force_proxy.load(Ordering::SeqCst),
         "probe_whitelist": ctx.scan_probe_wl.load(Ordering::SeqCst),
         "concurrency": ctx.scan_concurrency.load(Ordering::SeqCst),
+        "cycle_ipv4_fast": ctx.cycle_enabled_ipv4_fast.load(Ordering::SeqCst),
+        "cycle_ipv6_targeted": ctx.cycle_enabled_ipv6_targeted.load(Ordering::SeqCst),
+        "cycle_ipv4_deep": ctx.cycle_enabled_ipv4_deep.load(Ordering::SeqCst),
+        "cycle_ipv6_deep": ctx.cycle_enabled_ipv6_deep.load(Ordering::SeqCst),
     }))
+}
+
+async fn api_set_cycle_toggle(
+    State(ctx): State<Arc<AppCtx>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let cycle = params.get("cycle").cloned().unwrap_or_default();
+    let on = params.get("on").map(|v| v == "1").unwrap_or(true);
+    match cycle.as_str() {
+        "ipv4_fast" => ctx.cycle_enabled_ipv4_fast.store(on, Ordering::SeqCst),
+        "ipv6_targeted" => ctx.cycle_enabled_ipv6_targeted.store(on, Ordering::SeqCst),
+        "ipv4_deep" => ctx.cycle_enabled_ipv4_deep.store(on, Ordering::SeqCst),
+        "ipv6_deep" => ctx.cycle_enabled_ipv6_deep.store(on, Ordering::SeqCst),
+        _ => {}
+    }
+    Json(serde_json::json!({"ok": true, "cycle": cycle, "on": on}))
 }
 
 async fn api_set_force_proxy(
@@ -520,6 +553,14 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
     });
 
     let cycle_order = CycleType::cycle_order();
+    let cycle_enabled = |ct: &CycleType| -> bool {
+        match ct {
+            CycleType::Ipv4Fast => ctx.cycle_enabled_ipv4_fast.load(Ordering::SeqCst),
+            CycleType::Ipv6Targeted => ctx.cycle_enabled_ipv6_targeted.load(Ordering::SeqCst),
+            CycleType::Ipv4Deep => ctx.cycle_enabled_ipv4_deep.load(Ordering::SeqCst),
+            CycleType::Ipv6Deep => ctx.cycle_enabled_ipv6_deep.load(Ordering::SeqCst),
+        }
+    };
     let mut pinned_cycle: bool = false;
     let mut cycle_order_idx: usize = {
         let start_ct = ctx.start_cycle_type.lock().unwrap().take();
@@ -543,7 +584,18 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
     };
 
     while !cancel.load(Ordering::SeqCst) {
-        let ct = cycle_order[cycle_order_idx].clone();
+        // Skip disabled cycle types
+        let ct = loop {
+            let candidate = &cycle_order[cycle_order_idx];
+            if cycle_enabled(candidate) { break candidate.clone(); }
+            cycle_order_idx = (cycle_order_idx + 1) % cycle_order.len();
+            // Prevent infinite loop if all disabled
+            if cycle_order_idx == 0 {
+                log::warn!("All cycles disabled — exiting");
+                running.store(false, Ordering::SeqCst);
+                return;
+            }
+        };
         let cycle_name = ct.name();
         let cycle_label = ct.label();
 
@@ -569,18 +621,29 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
 
         let ports = ct.ports();
         let port_count = ports.len();
+        let is_deep = matches!(ct, CycleType::Ipv4Deep | CycleType::Ipv6Deep);
 
-        let ranges = if ct.is_v6() {
-            vec![] // IPv6 not iterable for now, skip
+        let v6_ips: Vec<String> = if ct.is_v6() {
+            scanner::ranges::get_ipv6_ips(if is_deep { 4 } else { 1 })
+        } else {
+            vec![]
+        };
+
+        let ranges: Vec<scanner::ranges::CidrRange> = if ct.is_v6() {
+            vec![]
         } else {
             build_ipv4_ranges(&db, cycle_name, ctx.rescan_all.load(Ordering::SeqCst))
         };
 
-        let total_ips: u64 = ranges.iter().map(|r| {
-            let s = scanner::ranges::ip_to_u32(r.start);
-            let e = scanner::ranges::ip_to_u32(r.end);
-            (e.saturating_sub(s) + 1) as u64
-        }).sum();
+        let total_ips: u64 = if ct.is_v6() {
+            v6_ips.len() as u64
+        } else {
+            ranges.iter().map(|r| {
+                let s = scanner::ranges::ip_to_u32(r.start);
+                let e = scanner::ranges::ip_to_u32(r.end);
+                (e.saturating_sub(s) + 1) as u64
+            }).sum()
+        };
 
         let mut scanned_ips: u64 = 0;
         let mut start_from_ip: Option<u32> = None;
@@ -612,7 +675,8 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
         }
 
         let effective_total = total_ips.saturating_sub(scanned_ips);
-        log::info!("=== Cycle {} ({}) - {} IPs across {} ranges ({} ports) ===", global_cycle, cycle_label, total_ips, ranges.len(), port_count);
+        let range_count = if ct.is_v6() { 16 } else { ranges.len() };
+        log::info!("=== Cycle {} ({}) - {} IPs across {} ranges ({} ports) ===", global_cycle, cycle_label, total_ips, range_count, port_count);
         if scanned_ips > 0 {
             log::info!("Resuming at {} scanned, {} remaining", scanned_ips, effective_total);
         }
@@ -624,6 +688,89 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
         // Save checkpoint at start so resume always works
         let _ = db.save_checkpoint(cycle_name, global_cycle, 0, scanned_ips, found_count.load(Ordering::SeqCst));
 
+        if ct.is_v6() {
+            // IPv6 scanning — iterate IP strings directly
+            for ip_str in &v6_ips {
+                if cancel.load(Ordering::SeqCst) { break; }
+                if scanned_ips < start_from_ip.unwrap_or(0) as u64 { scanned_ips += 1; continue; }
+
+                let permit = sem.clone().acquire_owned().await.unwrap();
+                let c = cancel.clone();
+                let a_str = ip_str.clone();
+                let proxy_for_task = effective_proxy.clone();
+                let fc = found_count.clone();
+                let do_probe = probe_wl;
+                let task_ports = ports.clone();
+                let task_tx = db_tx.clone();
+                let task_known = known_set.clone();
+
+                handles.push(tokio::spawn(async move {
+                    let _held = permit;
+                    let mut found_this_ip: u64 = 0;
+                    let proxy_ref: Option<String> = proxy_for_task;
+                    for &port in &task_ports {
+                        if c.load(Ordering::SeqCst) { break; }
+                        let px: Option<&str> = proxy_ref.as_deref();
+                        let is_bedrock = port >= 19130 && port <= 19140;
+                        let r: Result<scanner::ServerInfo, String> = if is_bedrock {
+                            match scanner::bedrock::ping_bedrock(&a_str, port).await {
+                                Ok(bi) => {
+                                    let now = chrono::Utc::now().to_rfc3339();
+                                    Ok(scanner::ServerInfo {
+                                        ip: a_str.clone(), port,
+                                        motd: bi.motd, version: format!("Bedrock {}", bi.version),
+                                        protocol: bi.protocol, online_players: bi.online_players,
+                                        max_players: bi.max_players, ping_ms: bi.ping_ms,
+                                        modded: false, mod_list: vec![],
+                                        whitelisted: None,
+                                        category: scanner::ServerCategory::from_str("unknown"),
+                                        tags: vec!["bedrock".to_string(), bi.game_mode.clone()],
+                                        player_sample: vec![], last_seen: now.clone(), first_seen: now,
+                                    })
+                                }
+                                Err(e) => Err(e),
+                            }
+                        } else if let Some(pr) = px {
+                            scanner::ping::ping_server_via_proxy(&a_str, port, Some(pr)).await
+                        } else {
+                            scanner::ping::ping_server(&a_str, port).await
+                        };
+                        if let Ok(mut info) = r {
+                            let key = format!("{}:{}", info.ip, info.port);
+                            let is_new = {
+                                let mut set = task_known.lock().unwrap();
+                                if set.contains(&key) { false } else { set.insert(key.clone()); true }
+                            };
+                            if is_new { found_this_ip += 1; }
+                            if do_probe {
+                                info.whitelisted = scanner::probe::check_whitelist(&info, px).await;
+                            }
+                            info.category = categorize_from_info(&info);
+                            info.tags = crate::scanner::ping::generate_tags_info(&info);
+                            let _ = task_tx.send(info).await;
+                        }
+                    }
+                    if found_this_ip > 0 { fc.fetch_add(found_this_ip, Ordering::SeqCst); }
+                }));
+
+                scanned_ips += 1;
+                if scanned_ips % 200 == 0 {
+                    handles.retain(|h| !h.is_finished());
+                    {
+                        let mut p = ctx.scan_progress.lock().unwrap();
+                        p.scanned_ips = scanned_ips;
+                        p.found_servers = found_count.load(Ordering::SeqCst);
+                    }
+                    *ctx.stats_cache.lock().unwrap() = None;
+                    tokio::task::yield_now().await;
+                }
+                if scanned_ips.saturating_sub(last_checkpoint_at) >= SAVE_CHECKPOINT_EVERY {
+                    let _ = db.save_checkpoint(cycle_name, global_cycle, 0, scanned_ips, found_count.load(Ordering::SeqCst));
+                    last_checkpoint_at = scanned_ips;
+                }
+            }
+        } else {
+            // IPv4 scanning — iterate through IP ranges
         for range in &ranges {
             if cancel.load(Ordering::SeqCst) { break; }
 
@@ -756,6 +903,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
             let range_found = found_count.load(Ordering::SeqCst).saturating_sub(range_found_before);
             let _ = db.record_range_density(&range_name, range_found as i64, cycle_name);
         }
+        } // end IPv4 else block
 
         // Drain remaining handles
         for h in handles.drain(..) {

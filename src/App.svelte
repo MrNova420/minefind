@@ -18,6 +18,7 @@
   let showSettings = $state(false);
   let concurrency = $state(4000);
   let rescanAll = $state(false);
+  let cycleToggles = $state({ ipv4_fast: true, ipv6_targeted: true, ipv4_deep: true, ipv6_deep: true });
   let cycleStats = $state({ cycles: 0, total_servers_found: 0, total_targets_scanned: 0 });
   let progress = $state({ scanned_ips: 0, total_ips: 0, found_servers: 0, current_range: "", elapsed_secs: 0, cycle: 0, cycle_type: "", status: "stopped", lifetime_scanned: 0 });
   let kittyServers = $state([]);
@@ -157,6 +158,12 @@
     await api(`/settings/rescan?on=${newVal ? "1" : "0"}`, { method: "POST" });
   }
 
+  async function toggleCycle(cycle) {
+    const newVal = !cycleToggles[cycle];
+    cycleToggles[cycle] = newVal;
+    await api(`/settings/cycle?cycle=${cycle}&on=${newVal ? "1" : "0"}`, { method: "POST" });
+  }
+
   async function resetScanner() {
     if (!confirm("Reset all scanner memory? Keeps your servers, clears all cycle history and checkpoints.")) return;
     const res = await api("/scan/reset", { method: "POST" });
@@ -267,6 +274,12 @@
       forceProxy = stg.force_proxy === true;
       probeWhitelist = stg.probe_whitelist !== false;
       if (stg.concurrency) concurrency = stg.concurrency;
+      cycleToggles = {
+        ipv4_fast: stg.cycle_ipv4_fast !== false,
+        ipv6_targeted: stg.cycle_ipv6_targeted !== false,
+        ipv4_deep: stg.cycle_ipv4_deep !== false,
+        ipv6_deep: stg.cycle_ipv6_deep !== false,
+      };
     }
     // Resume live polling if scan is already running
     const status = await api("/scan/status");
@@ -446,6 +459,42 @@
         </div>
         <label class="toggle">
           <input type="checkbox" checked={rescanAll} onchange={toggleRescan} disabled={scanRunning} />
+        </label>
+      </div>
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">IPv4 Fast</span>
+          <span class="setting-desc">Java (25565) + Bedrock (19132)</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" checked={cycleToggles.ipv4_fast} onchange={() => toggleCycle('ipv4_fast')} disabled={scanRunning} />
+        </label>
+      </div>
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">IPv6 Targeted</span>
+          <span class="setting-desc">Hosting provider v6 prefixes</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" checked={cycleToggles.ipv6_targeted} onchange={() => toggleCycle('ipv6_targeted')} disabled={scanRunning} />
+        </label>
+      </div>
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">IPv4 Deep</span>
+          <span class="setting-desc">27 ports, full sweep</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" checked={cycleToggles.ipv4_deep} onchange={() => toggleCycle('ipv4_deep')} disabled={scanRunning} />
+        </label>
+      </div>
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">IPv6 Deep</span>
+          <span class="setting-desc">27 ports, full v6 sweep</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" checked={cycleToggles.ipv6_deep} onchange={() => toggleCycle('ipv6_deep')} disabled={scanRunning} />
         </label>
       </div>
       <div class="setting-row">
