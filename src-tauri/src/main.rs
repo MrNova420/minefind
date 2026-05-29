@@ -832,8 +832,8 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
         }
 
         let sem = Arc::new(tokio::sync::Semaphore::new(concurrency));
-        let deep_first_sem = Arc::new(tokio::sync::Semaphore::new(25));
-        let deep_bulk_sem = Arc::new(tokio::sync::Semaphore::new(25));
+        let deep_first_sem = Arc::new(tokio::sync::Semaphore::new(100));
+        let deep_bulk_sem = Arc::new(tokio::sync::Semaphore::new(50));
 
         let mut handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
         let mut last_checkpoint_at: u64 = scanned_ips;

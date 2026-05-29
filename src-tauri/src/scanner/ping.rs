@@ -138,7 +138,11 @@ pub async fn ping_server_via_proxy_with_timeout(ip: &str, port: u16, proxy: Opti
     let result = ping_server_via_proxy_inner(ip, port, proxy, timeout_dur).await;
     match &result {
         Ok(info) => log::info!("PING OK {}:{} v={}", ip, port, info.version),
-        Err(e) => { if should_log_ping_fail() { log::warn!("PING FAIL {}:{} — {}", ip, port, e); } }
+        Err(e) => {
+            if log::log_enabled!(log::Level::Debug) && should_log_ping_fail() {
+                log::debug!("PING FAIL {}:{} — {}", ip, port, e);
+            }
+        }
     }
     result
 }
