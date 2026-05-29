@@ -48,6 +48,7 @@ struct AppCtx {
     cycle_enabled_ipv4_fast: AtomicBool,
     cycle_enabled_ipv6_targeted: AtomicBool,
     cycle_enabled_ipv4_deep: AtomicBool,
+    cycle_enabled_ipv4_hot_deep: AtomicBool,
     cycle_enabled_ipv6_deep: AtomicBool,
 }
 
@@ -55,6 +56,7 @@ struct AppCtx {
 enum CycleType {
     Ipv4Fast,
     Ipv6Targeted,
+    Ipv4HotDeep,
     Ipv4Deep,
     Ipv6Deep,
 }
@@ -64,6 +66,7 @@ impl CycleType {
         match self {
             CycleType::Ipv4Fast => "ipv4_fast",
             CycleType::Ipv6Targeted => "ipv6_targeted",
+            CycleType::Ipv4HotDeep => "ipv4_hot_deep",
             CycleType::Ipv4Deep => "ipv4_deep",
             CycleType::Ipv6Deep => "ipv6_deep",
         }
@@ -73,6 +76,7 @@ impl CycleType {
         match self {
             CycleType::Ipv4Fast => "IPv4 Fast (Java+Bedrock)",
             CycleType::Ipv6Targeted => "IPv6 Targeted (port 25565)",
+            CycleType::Ipv4HotDeep => "IPv4 Hot Deep (server IPs only)",
             CycleType::Ipv4Deep => "IPv4 Deep (ALL ports)",
             CycleType::Ipv6Deep => "IPv6 Deep (ALL ports)",
         }
@@ -81,7 +85,7 @@ impl CycleType {
     fn ports(&self) -> Vec<u16> {
         match self {
             CycleType::Ipv4Fast | CycleType::Ipv6Targeted => vec![25565, 19132],
-            CycleType::Ipv4Deep | CycleType::Ipv6Deep => {
+            CycleType::Ipv4HotDeep | CycleType::Ipv4Deep | CycleType::Ipv6Deep => {
                 // Priority order: most likely MC ports first, then everything else
                 let priority: &[u16] = &[
                     // Tier 1: defaults
@@ -128,15 +132,16 @@ impl CycleType {
 
     #[allow(dead_code)]
     fn is_deep(&self) -> bool {
-        matches!(self, CycleType::Ipv4Deep | CycleType::Ipv6Deep)
+        matches!(self, CycleType::Ipv4HotDeep | CycleType::Ipv4Deep | CycleType::Ipv6Deep)
     }
 
-    fn cycle_order() -> [CycleType; 4] {
+    fn cycle_order() -> [CycleType; 5] {
         [
-            CycleType::Ipv6Targeted,   // ~5 min
-            CycleType::Ipv6Deep,       // ~2 hours
-            CycleType::Ipv4Fast,       // ~8 days
-            CycleType::Ipv4Deep,       // ~16 days
+            CycleType::Ipv6Targeted,
+            CycleType::Ipv6Deep,
+            CycleType::Ipv4Fast,
+            CycleType::Ipv4HotDeep,
+            CycleType::Ipv4Deep,
         ]
     }
 }
@@ -200,6 +205,7 @@ async fn main() {
         cycle_enabled_ipv4_fast: AtomicBool::new(true),
         cycle_enabled_ipv6_targeted: AtomicBool::new(true),
         cycle_enabled_ipv4_deep: AtomicBool::new(true),
+        cycle_enabled_ipv4_hot_deep: AtomicBool::new(true),
         cycle_enabled_ipv6_deep: AtomicBool::new(true),
     });
 
@@ -521,6 +527,7 @@ async fn api_get_settings(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Va
         "cycle_ipv4_fast": ctx.cycle_enabled_ipv4_fast.load(Ordering::SeqCst),
         "cycle_ipv6_targeted": ctx.cycle_enabled_ipv6_targeted.load(Ordering::SeqCst),
         "cycle_ipv4_deep": ctx.cycle_enabled_ipv4_deep.load(Ordering::SeqCst),
+        "cycle_ipv4_hot_deep": ctx.cycle_enabled_ipv4_hot_deep.load(Ordering::SeqCst),
         "cycle_ipv6_deep": ctx.cycle_enabled_ipv6_deep.load(Ordering::SeqCst),
         "has_ipv6": has_ipv6,
     }))
@@ -536,6 +543,7 @@ async fn api_set_cycle_toggle(
         "ipv4_fast" => ctx.cycle_enabled_ipv4_fast.store(on, Ordering::SeqCst),
         "ipv6_targeted" => ctx.cycle_enabled_ipv6_targeted.store(on, Ordering::SeqCst),
         "ipv4_deep" => ctx.cycle_enabled_ipv4_deep.store(on, Ordering::SeqCst),
+        "ipv4_hot_deep" => ctx.cycle_enabled_ipv4_hot_deep.store(on, Ordering::SeqCst),
         "ipv6_deep" => ctx.cycle_enabled_ipv6_deep.store(on, Ordering::SeqCst),
         _ => {}
     }
@@ -704,6 +712,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
         match ct {
             CycleType::Ipv4Fast => ctx.cycle_enabled_ipv4_fast.load(Ordering::SeqCst),
             CycleType::Ipv6Targeted => ctx.cycle_enabled_ipv6_targeted.load(Ordering::SeqCst),
+            CycleType::Ipv4HotDeep => ctx.cycle_enabled_ipv4_hot_deep.load(Ordering::SeqCst),
             CycleType::Ipv4Deep => ctx.cycle_enabled_ipv4_deep.load(Ordering::SeqCst),
             CycleType::Ipv6Deep => ctx.cycle_enabled_ipv6_deep.load(Ordering::SeqCst),
         }
@@ -771,7 +780,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
 
         let ports = ct.ports();
         let port_count = ports.len();
-        let is_deep = matches!(ct, CycleType::Ipv4Deep | CycleType::Ipv6Deep);
+        let is_deep = matches!(ct, CycleType::Ipv4HotDeep | CycleType::Ipv4Deep | CycleType::Ipv6Deep);
 
         let v6_ips: Vec<String> = if ct.is_v6() {
             scanner::ranges::get_ipv6_ips(if is_deep { 4 } else { 1 })
@@ -781,6 +790,18 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
 
         let ranges: Vec<scanner::ranges::CidrRange> = if ct.is_v6() {
             vec![]
+        } else if matches!(ct, CycleType::Ipv4HotDeep) {
+            let hot = db.get_hot_ips().unwrap_or_default();
+            log::info!("Hot Deep: {} server-hosting IPs to scan", hot.len());
+            hot.into_iter().filter_map(|ip_str| {
+                let ip: std::net::Ipv4Addr = ip_str.parse().ok()?;
+                Some(scanner::ranges::CidrRange {
+                    name: "Hot IP".into(),
+                    start: ip,
+                    end: ip,
+                    mask: 32,
+                })
+            }).collect()
         } else {
             build_ipv4_ranges(&db, cycle_name, ctx.rescan_all.load(Ordering::SeqCst))
         };
@@ -832,8 +853,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
         }
 
         let sem = Arc::new(tokio::sync::Semaphore::new(concurrency));
-        let deep_first_sem = Arc::new(tokio::sync::Semaphore::new(100));
-        let deep_bulk_sem = Arc::new(tokio::sync::Semaphore::new(50));
+        let conn_sem = Arc::new(tokio::sync::Semaphore::new(10000));
 
         let mut handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
         let mut last_checkpoint_at: u64 = scanned_ips;
@@ -862,8 +882,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                     log::info!("PC health pause complete");
                 }
 
-                let active_sem = if is_deep { &deep_first_sem } else { &sem };
-                let permit = active_sem.clone().acquire_owned().await.unwrap();
+                let permit = sem.clone().acquire_owned().await.unwrap();
                 let c = cancel.clone();
                 let a_str = ip_str.clone();
                 let proxy_for_task = effective_proxy.clone();
@@ -873,19 +892,20 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                 let task_tx = db_tx.clone();
                 let task_known = known_set.clone();
                 let task_deep = is_deep;
-                let dbs = deep_bulk_sem.clone();
+                let tcs = conn_sem.clone();
 
                 handles.push(tokio::spawn(async move {
                     let mut found_this_ip: u64 = 0;
                     let proxy_ref: Option<String> = proxy_for_task;
                     let _permit = permit;
-                    let bulk_sem = dbs;
+                    let cs = tcs;
 
                     if task_deep && task_ports.len() > 2 {
                         // First chunk: priority ports, IP permit held
                         let mut chunks = task_ports.chunks(200);
                         if let Some(first_chunk) = chunks.next() {
                             let port_futures: Vec<_> = first_chunk.iter().map(|&p| {
+                            let csc = cs.clone();
                             let a = a_str.clone();
                             let px = proxy_ref.clone();
                             let c2 = c.clone();
@@ -894,7 +914,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                                 let px_r: Option<&str> = px.as_deref();
                                 let is_bedroom = p >= 19130 && p <= 19140;
                                 let r: Result<scanner::ServerInfo, String> = if is_bedroom {
-                                    scanner::bedrock::ping_bedrock(&a, p).await.map(|bi| {
+                                    scanner::bedrock::ping_bedrock_with_sem(&a, p, Some(csc.clone())).await.map(|bi| {
                                         let now = chrono::Utc::now().to_rfc3339();
                                         scanner::ServerInfo {
                                             ip: a.clone(), port: p,
@@ -910,7 +930,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                                 } else if let Some(pr) = px_r {
                                     scanner::ping::ping_server_via_proxy(&a, p, Some(pr)).await
                                 } else {
-                                    scanner::ping::ping_server_deep(&a, p).await
+                                    scanner::ping::ping_server_deep_with_sem(&a, p, Some(csc.clone())).await
                                 };
                                 r.ok().map(|info| (info, p))
                             }
@@ -932,10 +952,10 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                             let _ = task_tx.send(info).await;
                         }
                         }
-                        drop(_permit); // Release first-chunk IP permit
-                        let _bulk = bulk_sem.acquire_owned().await.unwrap();
+                        drop(_permit);
                         for chunk in chunks {
                             let port_futures: Vec<_> = chunk.iter().map(|&p| {
+                            let csc = cs.clone();
                             let a = a_str.clone();
                             let px = proxy_ref.clone();
                             let c2 = c.clone();
@@ -944,7 +964,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                                 let px_r: Option<&str> = px.as_deref();
                                 let is_bedroom = p >= 19130 && p <= 19140;
                                 let r: Result<scanner::ServerInfo, String> = if is_bedroom {
-                                    scanner::bedrock::ping_bedrock(&a, p).await.map(|bi| {
+                                    scanner::bedrock::ping_bedrock_with_sem(&a, p, Some(csc.clone())).await.map(|bi| {
                                         let now = chrono::Utc::now().to_rfc3339();
                                         scanner::ServerInfo {
                                             ip: a.clone(), port: p,
@@ -960,7 +980,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                                 } else if let Some(pr) = px_r {
                                     scanner::ping::ping_server_via_proxy(&a, p, Some(pr)).await
                                 } else {
-                                    scanner::ping::ping_server_deep(&a, p).await
+                                    scanner::ping::ping_server_deep_with_sem(&a, p, Some(csc.clone())).await
                                 };
                                 r.ok().map(|info| (info, p))
                             }
@@ -1011,7 +1031,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                         } else if task_deep {
                             scanner::ping::ping_server_deep(&a_str, port).await
                         } else {
-                            scanner::ping::ping_server(&a_str, port).await
+                            scanner::ping::ping_server_with_sem(&a_str, port, Some(cs.clone())).await
                         };
                         if let Ok(mut info) = r {
                             let key = format!("{}:{}", info.ip, info.port);
@@ -1110,8 +1130,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                     continue;
                 }
 
-                let active_sem = if is_deep { &deep_first_sem } else { &sem };
-                let permit = active_sem.clone().acquire_owned().await.unwrap();
+                let permit = sem.clone().acquire_owned().await.unwrap();
                 let c = cancel.clone();
                 let a_str = scanner::ranges::u32_to_ip(ip_u32).to_string();
                 let proxy_for_task = effective_proxy.clone();
@@ -1121,10 +1140,10 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                 let task_tx = db_tx.clone();
                 let task_known = known_set.clone();
                 let task_deep = is_deep;
-                let dbs = deep_bulk_sem.clone();
+                let tcs = conn_sem.clone();
 
                 handles.push(tokio::spawn(async move {
-                    let bulk_sem = dbs;
+                    let cs = tcs;
                     let mut found_this_ip: u64 = 0;
                     let proxy_ref: Option<String> = proxy_for_task;
                     let _permit = permit;
@@ -1133,6 +1152,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                         let mut chunks = task_ports.chunks(200);
                         if let Some(first_chunk) = chunks.next() {
                             let port_futures: Vec<_> = first_chunk.iter().map(|&p| {
+                            let csc = cs.clone();
                             let a = a_str.clone();
                             let px = proxy_ref.clone();
                             let c2 = c.clone();
@@ -1141,7 +1161,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                                 let px_r: Option<&str> = px.as_deref();
                                 let is_bedroom = p >= 19130 && p <= 19140;
                                 let r: Result<scanner::ServerInfo, String> = if is_bedroom {
-                                    scanner::bedrock::ping_bedrock(&a, p).await.map(|bi| {
+                                    scanner::bedrock::ping_bedrock_with_sem(&a, p, Some(csc.clone())).await.map(|bi| {
                                         let now = chrono::Utc::now().to_rfc3339();
                                         scanner::ServerInfo {
                                             ip: a.clone(), port: p,
@@ -1157,7 +1177,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                                 } else if let Some(pr) = px_r {
                                     scanner::ping::ping_server_via_proxy(&a, p, Some(pr)).await
                                 } else {
-                                    scanner::ping::ping_server_deep(&a, p).await
+                                    scanner::ping::ping_server_deep_with_sem(&a, p, Some(csc.clone())).await
                                 };
                                 r.ok().map(|info| (info, p))
                             }
@@ -1179,10 +1199,10 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                             let _ = task_tx.send(info).await;
                         }
                         } // end first chunk
-                        drop(_permit); // Release first-chunk IP permit
-                        let _bulk = bulk_sem.acquire_owned().await.unwrap();
+                        drop(_permit);
                         for chunk in chunks {
                             let port_futures: Vec<_> = chunk.iter().map(|&p| {
+                            let csc = cs.clone();
                             let a = a_str.clone();
                             let px = proxy_ref.clone();
                             let c2 = c.clone();
@@ -1191,7 +1211,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                                 let px_r: Option<&str> = px.as_deref();
                                 let is_bedroom = p >= 19130 && p <= 19140;
                                 let r: Result<scanner::ServerInfo, String> = if is_bedroom {
-                                    scanner::bedrock::ping_bedrock(&a, p).await.map(|bi| {
+                                    scanner::bedrock::ping_bedrock_with_sem(&a, p, Some(csc.clone())).await.map(|bi| {
                                         let now = chrono::Utc::now().to_rfc3339();
                                         scanner::ServerInfo {
                                             ip: a.clone(), port: p,
@@ -1207,7 +1227,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                                 } else if let Some(pr) = px_r {
                                     scanner::ping::ping_server_via_proxy(&a, p, Some(pr)).await
                                 } else {
-                                    scanner::ping::ping_server_deep(&a, p).await
+                                    scanner::ping::ping_server_deep_with_sem(&a, p, Some(csc.clone())).await
                                 };
                                 r.ok().map(|info| (info, p))
                             }
@@ -1259,7 +1279,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                         } else if task_deep {
                             scanner::ping::ping_server_deep(&a_str, port).await
                         } else {
-                            scanner::ping::ping_server(&a_str, port).await
+                            scanner::ping::ping_server_with_sem(&a_str, port, Some(cs.clone())).await
                         };
 
                         if let Ok(mut info) = r {

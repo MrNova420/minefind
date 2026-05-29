@@ -1,4 +1,5 @@
 use std::time::Duration;
+use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 
@@ -24,8 +25,20 @@ pub struct BedrockInfo {
 }
 
 pub async fn ping_bedrock(ip: &str, port: u16) -> Result<BedrockInfo, String> {
+    ping_bedrock_inner(ip, port, None).await
+}
+
+pub async fn ping_bedrock_with_sem(ip: &str, port: u16, cs: Option<Arc<tokio::sync::Semaphore>>) -> Result<BedrockInfo, String> {
+    ping_bedrock_inner(ip, port, cs).await
+}
+
+async fn ping_bedrock_inner(ip: &str, port: u16, conn_sem: Option<Arc<tokio::sync::Semaphore>>) -> Result<BedrockInfo, String> {
     let start = std::time::Instant::now();
     let addr = format!("{}:{}", ip, port);
+    let _cp = match conn_sem {
+        Some(ref s) => Some(s.clone().acquire_owned().await.unwrap()),
+        None => None,
+    };
 
     let socket = timeout(BEDROCK_TIMEOUT, UdpSocket::bind("0.0.0.0:0"))
         .await

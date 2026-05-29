@@ -323,6 +323,15 @@ impl Database {
 
     // --- Pending Recheck (timed-out IPs) ---
 
+    pub fn get_hot_ips(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT ip FROM servers"
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
     pub fn get_pending_rechecks(&self, limit: i64) -> Result<Vec<(String, u16, i64)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(

@@ -19,13 +19,14 @@
     const labels = {
       ipv4_fast: "IPv4 Fast",
       ipv6_targeted: "IPv6 Targeted",
+      ipv4_hot_deep: "IPv4 Hot Deep",
       ipv4_deep: "IPv4 Deep",
       ipv6_deep: "IPv6 Deep",
     };
     return labels[type] || type || "—";
   }
 
-  const allTypes = ["ipv4_fast", "ipv6_targeted", "ipv4_deep", "ipv6_deep"];
+  const allTypes = ["ipv4_fast", "ipv6_targeted", "ipv4_hot_deep", "ipv4_deep", "ipv6_deep"];
 
   let typeSummary = $derived(
     allTypes.map(t => {

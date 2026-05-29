@@ -18,7 +18,7 @@
   let showSettings = $state(false);
   let concurrency = $state(4000);
   let rescanAll = $state(true);
-  let cycleToggles = $state({ ipv4_fast: true, ipv6_targeted: true, ipv4_deep: true, ipv6_deep: true });
+  let cycleToggles = $state({ ipv4_fast: true, ipv6_targeted: true, ipv4_hot_deep: true, ipv4_deep: true, ipv6_deep: true });
   let hasIpv6 = $state(true);
   let cycleStats = $state({ cycles: 0, total_servers_found: 0, total_targets_scanned: 0 });
   let progress = $state({ scanned_ips: 0, total_ips: 0, found_servers: 0, current_range: "", elapsed_secs: 0, cycle: 0, cycle_type: "", status: "stopped", lifetime_scanned: 0 });
@@ -271,6 +271,7 @@
       cycleToggles = {
         ipv4_fast: stg.cycle_ipv4_fast !== false,
         ipv6_targeted: stg.cycle_ipv6_targeted !== false,
+        ipv4_hot_deep: stg.cycle_ipv4_hot_deep !== false,
         ipv4_deep: stg.cycle_ipv4_deep !== false,
         ipv6_deep: stg.cycle_ipv6_deep !== false,
       };
@@ -499,6 +500,15 @@
         </div>
         <label class="toggle">
           <input type="checkbox" checked={cycleToggles.ipv6_targeted} onchange={() => toggleCycle('ipv6_targeted')} disabled={scanRunning} />
+        </label>
+      </div>
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">IPv4 Hot Deep</span>
+          <span class="setting-desc">65K ports on server-hosting IPs only</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" checked={cycleToggles.ipv4_hot_deep} onchange={() => toggleCycle('ipv4_hot_deep')} disabled={scanRunning} />
         </label>
       </div>
       <div class="setting-row">

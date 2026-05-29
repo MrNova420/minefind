@@ -3,6 +3,7 @@ use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
 use crate::scanner::{ServerInfo, PlayerSample, ServerCategory};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 fn should_log_ping_fail() -> bool {
     static LAST_LOG: AtomicU64 = AtomicU64::new(0);
@@ -130,12 +131,25 @@ pub async fn ping_server_via_proxy(ip: &str, port: u16, proxy: Option<&str>) -> 
     ping_server_via_proxy_with_timeout(ip, port, proxy, PING_TIMEOUT_FAST).await
 }
 
+pub async fn ping_server_with_sem(ip: &str, port: u16, cs: Option<Arc<tokio::sync::Semaphore>>) -> Result<ServerInfo, String> {
+    ping_server_inner_with_sem(ip, port, None, PING_TIMEOUT_FAST, cs).await
+}
+
+pub async fn ping_server_deep_with_sem(ip: &str, port: u16, cs: Option<Arc<tokio::sync::Semaphore>>) -> Result<ServerInfo, String> {
+    ping_server_inner_with_sem(ip, port, None, PING_TIMEOUT_DEEP, cs).await
+}
+
+#[allow(dead_code)]
+pub async fn ping_server_via_proxy_with_sem(ip: &str, port: u16, proxy: Option<&str>, cs: Option<Arc<tokio::sync::Semaphore>>) -> Result<ServerInfo, String> {
+    ping_server_inner_with_sem(ip, port, proxy, PING_TIMEOUT_FAST, cs).await
+}
+
 async fn ping_server_with_timeout(ip: &str, port: u16, timeout_dur: Duration) -> Result<ServerInfo, String> {
     ping_server_via_proxy_with_timeout(ip, port, None, timeout_dur).await
 }
 
 pub async fn ping_server_via_proxy_with_timeout(ip: &str, port: u16, proxy: Option<&str>, timeout_dur: Duration) -> Result<ServerInfo, String> {
-    let result = ping_server_via_proxy_inner(ip, port, proxy, timeout_dur).await;
+    let result = ping_server_via_proxy_inner(ip, port, proxy, timeout_dur, None).await;
     match &result {
         Ok(info) => log::info!("PING OK {}:{} v={}", ip, port, info.version),
         Err(e) => {
@@ -147,8 +161,25 @@ pub async fn ping_server_via_proxy_with_timeout(ip: &str, port: u16, proxy: Opti
     result
 }
 
-async fn ping_server_via_proxy_inner(ip: &str, port: u16, proxy: Option<&str>, pto: Duration) -> Result<ServerInfo, String> {
+async fn ping_server_inner_with_sem(ip: &str, port: u16, proxy: Option<&str>, pto: Duration, cs: Option<Arc<tokio::sync::Semaphore>>) -> Result<ServerInfo, String> {
+    let result = ping_server_via_proxy_inner(ip, port, proxy, pto, cs).await;
+    match &result {
+        Ok(info) => log::info!("PING OK {}:{} v={}", ip, port, info.version),
+        Err(e) => {
+            if log::log_enabled!(log::Level::Debug) && should_log_ping_fail() {
+                log::debug!("PING FAIL {}:{} — {}", ip, port, e);
+            }
+        }
+    }
+    result
+}
+
+async fn ping_server_via_proxy_inner(ip: &str, port: u16, proxy: Option<&str>, pto: Duration, conn_sem: Option<Arc<tokio::sync::Semaphore>>) -> Result<ServerInfo, String> {
     let start = std::time::Instant::now();
+    let _cp = match conn_sem {
+        Some(ref s) => Some(s.clone().acquire_owned().await.unwrap()),
+        None => None,
+    };
 
     let stream = if let Some(proxy_addr) = proxy {
         match timeout(pto, crate::proxy::connect_through_socks5(proxy_addr, ip, port)).await {
