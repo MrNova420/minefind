@@ -100,10 +100,10 @@ impl CycleType {
 
     fn cycle_order() -> [CycleType; 4] {
         [
-            CycleType::Ipv4Fast,
-            CycleType::Ipv6Targeted,
-            CycleType::Ipv4Deep,
-            CycleType::Ipv6Deep,
+            CycleType::Ipv6Targeted,   // ~5 min
+            CycleType::Ipv6Deep,       // ~2 hours
+            CycleType::Ipv4Fast,       // ~8 days
+            CycleType::Ipv4Deep,       // ~16 days
         ]
     }
 }
@@ -572,6 +572,9 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
         }
     };
     let mut global_cycle: u64 = 0;
+    let mut last_health_pause: Instant = Instant::now();
+    const HEALTH_PAUSE_EVERY: Duration = Duration::from_secs(7200); // 2 hours
+    const HEALTH_PAUSE_DURATION: Duration = Duration::from_secs(900); // 15 minutes
 
     // Check for resume
     let mut resume_from: Option<db::Checkpoint> = {
@@ -692,7 +695,16 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
             // IPv6 scanning — iterate IP strings directly
             for ip_str in &v6_ips {
                 if cancel.load(Ordering::SeqCst) { break; }
-                if scanned_ips < start_from_ip.unwrap_or(0) as u64 { scanned_ips += 1; continue; }
+                // PC health pause every 2 hours
+                if last_health_pause.elapsed() >= HEALTH_PAUSE_EVERY {
+                    let sp = Instant::now();
+                    { let mut p = ctx.scan_progress.lock().unwrap(); p.status = "cooling".to_string(); p.current_range = "PC health pause — 15 min break".to_string(); }
+                    log::info!("PC health pause: cooling for 15 min...");
+                    while sp.elapsed() < HEALTH_PAUSE_DURATION { if cancel.load(Ordering::SeqCst) { break; } tokio::time::sleep(Duration::from_secs(5)).await; }
+                    last_health_pause = Instant::now();
+                    { let mut p = ctx.scan_progress.lock().unwrap(); p.status = "scanning".to_string(); }
+                    log::info!("PC health pause complete");
+                }
 
                 let permit = sem.clone().acquire_owned().await.unwrap();
                 let c = cancel.clone();
@@ -709,7 +721,58 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                     let _held = permit;
                     let mut found_this_ip: u64 = 0;
                     let proxy_ref: Option<String> = proxy_for_task;
-                    for &port in &task_ports {
+
+                    if task_deep && task_ports.len() > 2 {
+                        // Deep cycle: probe all ports concurrently
+                        let port_futures: Vec<_> = task_ports.iter().map(|&p| {
+                            let a = a_str.clone();
+                            let px = proxy_ref.clone();
+                            let c2 = c.clone();
+                            async move {
+                                if c2.load(Ordering::SeqCst) { return None; }
+                                let px_r: Option<&str> = px.as_deref();
+                                let is_bedroom = p >= 19130 && p <= 19140;
+                                let r: Result<scanner::ServerInfo, String> = if is_bedroom {
+                                    scanner::bedrock::ping_bedrock(&a, p).await.map(|bi| {
+                                        let now = chrono::Utc::now().to_rfc3339();
+                                        scanner::ServerInfo {
+                                            ip: a.clone(), port: p,
+                                            motd: bi.motd, version: format!("Bedrock {}", bi.version),
+                                            protocol: bi.protocol, online_players: bi.online_players,
+                                            max_players: bi.max_players, ping_ms: bi.ping_ms,
+                                            modded: false, mod_list: vec![], whitelisted: None,
+                                            category: scanner::ServerCategory::from_str("unknown"),
+                                            tags: vec!["bedrock".to_string(), bi.game_mode.clone()],
+                                            player_sample: vec![], last_seen: now.clone(), first_seen: now,
+                                        }
+                                    })
+                                } else if let Some(pr) = px_r {
+                                    scanner::ping::ping_server_via_proxy(&a, p, Some(pr)).await
+                                } else {
+                                    scanner::ping::ping_server_deep(&a, p).await
+                                };
+                                r.ok().map(|info| (info, p))
+                            }
+                        }).collect();
+                        let results = futures::future::join_all(port_futures).await;
+                        for (mut info, port) in results.into_iter().flatten() {
+                            let key = format!("{}:{}", info.ip, port);
+                            let is_new = {
+                                let mut set = task_known.lock().unwrap();
+                                if set.contains(&key) { false } else { set.insert(key.clone()); true }
+                            };
+                            if is_new { found_this_ip += 1; }
+                            if do_probe {
+                                let px_r: Option<&str> = proxy_ref.as_deref();
+                                info.whitelisted = scanner::probe::check_whitelist(&info, px_r).await;
+                            }
+                            info.category = categorize_from_info(&info);
+                            info.tags = crate::scanner::ping::generate_tags_info(&info);
+                            let _ = task_tx.send(info).await;
+                        }
+                    } else {
+                        // Fast cycle: sequential ports
+                        for &port in &task_ports {
                         if c.load(Ordering::SeqCst) { break; }
                         let px: Option<&str> = proxy_ref.as_deref();
                         let is_bedrock = port >= 19130 && port <= 19140;
@@ -753,6 +816,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                             let _ = task_tx.send(info).await;
                         }
                     }
+                    } // end else (fast/sequential)
                     if found_this_ip > 0 { fc.fetch_add(found_this_ip, Ordering::SeqCst); }
                 }));
 
@@ -776,6 +840,16 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
             // IPv4 scanning — iterate through IP ranges
         for range in &ranges {
             if cancel.load(Ordering::SeqCst) { break; }
+            // PC health pause every 2 hours
+            if last_health_pause.elapsed() >= HEALTH_PAUSE_EVERY {
+                let sp = Instant::now();
+                { let mut p = ctx.scan_progress.lock().unwrap(); p.status = "cooling".to_string(); p.current_range = "PC health pause — 15 min break".to_string(); }
+                log::info!("PC health pause: cooling for 15 min...");
+                while sp.elapsed() < HEALTH_PAUSE_DURATION { if cancel.load(Ordering::SeqCst) { break; } tokio::time::sleep(Duration::from_secs(5)).await; }
+                last_health_pause = Instant::now();
+                { let mut p = ctx.scan_progress.lock().unwrap(); p.status = "scanning".to_string(); }
+                log::info!("PC health pause complete");
+            }
 
             let range_start = scanner::ranges::ip_to_u32(range.start);
             let range_end = scanner::ranges::ip_to_u32(range.end);
@@ -829,6 +903,56 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                     let mut found_this_ip: u64 = 0;
                     let proxy_ref: Option<String> = proxy_for_task;
 
+                    if task_deep && task_ports.len() > 2 {
+                        // Deep cycle: probe all ports concurrently
+                        let port_futures: Vec<_> = task_ports.iter().map(|&p| {
+                            let a = a_str.clone();
+                            let px = proxy_ref.clone();
+                            let c2 = c.clone();
+                            async move {
+                                if c2.load(Ordering::SeqCst) { return None; }
+                                let px_r: Option<&str> = px.as_deref();
+                                let is_bedroom = p >= 19130 && p <= 19140;
+                                let r: Result<scanner::ServerInfo, String> = if is_bedroom {
+                                    scanner::bedrock::ping_bedrock(&a, p).await.map(|bi| {
+                                        let now = chrono::Utc::now().to_rfc3339();
+                                        scanner::ServerInfo {
+                                            ip: a.clone(), port: p,
+                                            motd: bi.motd, version: format!("Bedrock {}", bi.version),
+                                            protocol: bi.protocol, online_players: bi.online_players,
+                                            max_players: bi.max_players, ping_ms: bi.ping_ms,
+                                            modded: false, mod_list: vec![], whitelisted: None,
+                                            category: scanner::ServerCategory::from_str("unknown"),
+                                            tags: vec!["bedrock".to_string(), bi.game_mode.clone()],
+                                            player_sample: vec![], last_seen: now.clone(), first_seen: now,
+                                        }
+                                    })
+                                } else if let Some(pr) = px_r {
+                                    scanner::ping::ping_server_via_proxy(&a, p, Some(pr)).await
+                                } else {
+                                    scanner::ping::ping_server_deep(&a, p).await
+                                };
+                                r.ok().map(|info| (info, p))
+                            }
+                        }).collect();
+                        let results = futures::future::join_all(port_futures).await;
+                        for (mut info, port) in results.into_iter().flatten() {
+                            let key = format!("{}:{}", info.ip, port);
+                            let is_new = {
+                                let mut set = task_known.lock().unwrap();
+                                if set.contains(&key) { false } else { set.insert(key.clone()); true }
+                            };
+                            if is_new { found_this_ip += 1; }
+                            if do_probe {
+                                let px_r: Option<&str> = proxy_ref.as_deref();
+                                info.whitelisted = scanner::probe::check_whitelist(&info, px_r).await;
+                            }
+                            info.category = categorize_from_info(&info);
+                            info.tags = crate::scanner::ping::generate_tags_info(&info);
+                            let _ = task_tx.send(info).await;
+                        }
+                    } else {
+                        // Fast cycle: sequential ports
                     for &port in &task_ports {
                         if c.load(Ordering::SeqCst) { break; }
                         let px: Option<&str> = proxy_ref.as_deref();
@@ -878,7 +1002,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                             let _ = task_tx.send(info).await;
                         }
                     }
-
+                    } // end else (fast/sequential)
                     if found_this_ip > 0 {
                         fc.fetch_add(found_this_ip, Ordering::SeqCst);
                     }
