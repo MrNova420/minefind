@@ -2,6 +2,16 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
 use crate::scanner::{ServerInfo, PlayerSample, ServerCategory};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+fn should_log_ping_fail() -> bool {
+    static LAST_LOG: AtomicU64 = AtomicU64::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    LAST_LOG.swap(now, Ordering::Relaxed) < now
+}
 
 const PING_TIMEOUT_FAST: Duration = Duration::from_secs(2);
 const PING_TIMEOUT_DEEP: Duration = Duration::from_secs(3);
@@ -128,7 +138,7 @@ pub async fn ping_server_via_proxy_with_timeout(ip: &str, port: u16, proxy: Opti
     let result = ping_server_via_proxy_inner(ip, port, proxy, timeout_dur).await;
     match &result {
         Ok(info) => log::info!("PING OK {}:{} v={}", ip, port, info.version),
-        Err(e) => log::warn!("PING FAIL {}:{} — {}", ip, port, e),
+        Err(e) => { if should_log_ping_fail() { log::warn!("PING FAIL {}:{} — {}", ip, port, e); } }
     }
     result
 }

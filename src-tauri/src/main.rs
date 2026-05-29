@@ -832,7 +832,8 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
         }
 
         let sem = Arc::new(tokio::sync::Semaphore::new(concurrency));
-        let deep_port_sem = Arc::new(tokio::sync::Semaphore::new(500));
+        let deep_first_sem = Arc::new(tokio::sync::Semaphore::new(25));
+        let deep_bulk_sem = Arc::new(tokio::sync::Semaphore::new(25));
 
         let mut handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
         let mut last_checkpoint_at: u64 = scanned_ips;
@@ -861,7 +862,8 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                     log::info!("PC health pause complete");
                 }
 
-                let permit = sem.clone().acquire_owned().await.unwrap();
+                let active_sem = if is_deep { &deep_first_sem } else { &sem };
+                let permit = active_sem.clone().acquire_owned().await.unwrap();
                 let c = cancel.clone();
                 let a_str = ip_str.clone();
                 let proxy_for_task = effective_proxy.clone();
@@ -871,16 +873,16 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                 let task_tx = db_tx.clone();
                 let task_known = known_set.clone();
                 let task_deep = is_deep;
-                let dps = deep_port_sem.clone();
+                let dbs = deep_bulk_sem.clone();
 
                 handles.push(tokio::spawn(async move {
                     let mut found_this_ip: u64 = 0;
                     let proxy_ref: Option<String> = proxy_for_task;
                     let _permit = permit;
-                    let psem = dps;
+                    let bulk_sem = dbs;
 
                     if task_deep && task_ports.len() > 2 {
-                        // Deep cycle: first chunk holds IP permit, remaining use port semaphore
+                        // First chunk: priority ports, IP permit held
                         let mut chunks = task_ports.chunks(200);
                         if let Some(first_chunk) = chunks.next() {
                             let port_futures: Vec<_> = first_chunk.iter().map(|&p| {
@@ -930,16 +932,15 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                             let _ = task_tx.send(info).await;
                         }
                         }
-                        drop(_permit); // Release IP permit after priority ports
+                        drop(_permit); // Release first-chunk IP permit
+                        let _bulk = bulk_sem.acquire_owned().await.unwrap();
                         for chunk in chunks {
                             let port_futures: Vec<_> = chunk.iter().map(|&p| {
                             let a = a_str.clone();
                             let px = proxy_ref.clone();
                             let c2 = c.clone();
-                            let ps = psem.clone();
                             async move {
                                 if c2.load(Ordering::SeqCst) { return None; }
-                                let _pp = ps.acquire_owned().await.unwrap();
                                 let px_r: Option<&str> = px.as_deref();
                                 let is_bedroom = p >= 19130 && p <= 19140;
                                 let r: Result<scanner::ServerInfo, String> = if is_bedroom {
@@ -1109,7 +1110,8 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                     continue;
                 }
 
-                let permit = sem.clone().acquire_owned().await.unwrap();
+                let active_sem = if is_deep { &deep_first_sem } else { &sem };
+                let permit = active_sem.clone().acquire_owned().await.unwrap();
                 let c = cancel.clone();
                 let a_str = scanner::ranges::u32_to_ip(ip_u32).to_string();
                 let proxy_for_task = effective_proxy.clone();
@@ -1119,10 +1121,10 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                 let task_tx = db_tx.clone();
                 let task_known = known_set.clone();
                 let task_deep = is_deep;
-                let dps = deep_port_sem.clone();
+                let dbs = deep_bulk_sem.clone();
 
                 handles.push(tokio::spawn(async move {
-                    let psem = dps;
+                    let bulk_sem = dbs;
                     let mut found_this_ip: u64 = 0;
                     let proxy_ref: Option<String> = proxy_for_task;
                     let _permit = permit;
@@ -1177,16 +1179,15 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                             let _ = task_tx.send(info).await;
                         }
                         } // end first chunk
-                        drop(_permit); // Release IP permit after priority ports
+                        drop(_permit); // Release first-chunk IP permit
+                        let _bulk = bulk_sem.acquire_owned().await.unwrap();
                         for chunk in chunks {
                             let port_futures: Vec<_> = chunk.iter().map(|&p| {
                             let a = a_str.clone();
                             let px = proxy_ref.clone();
                             let c2 = c.clone();
-                            let ps = psem.clone();
                             async move {
                                 if c2.load(Ordering::SeqCst) { return None; }
-                                let _pp = ps.acquire_owned().await.unwrap();
                                 let px_r: Option<&str> = px.as_deref();
                                 let is_bedroom = p >= 19130 && p <= 19140;
                                 let r: Result<scanner::ServerInfo, String> = if is_bedroom {
