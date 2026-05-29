@@ -166,7 +166,7 @@ async fn ping_server_via_proxy_inner(ip: &str, port: u16, proxy: Option<&str>, p
 
     // Try multiple protocol versions
     let mut last_err = "no protocols tried".to_string();
-    for &(proto, ver_label) in PROTOCOL_VERSIONS {
+    for &(proto, _ver_label) in PROTOCOL_VERSIONS {
         let ping_packet = build_ping_packet(ip, port, proto);
         let mut send_buf = Vec::new();
         send_buf.extend_from_slice(&ping_packet);

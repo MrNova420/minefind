@@ -1,8 +1,8 @@
-use hickory_resolver::TokioAsyncResolver;
+use hickory_resolver::TokioResolver;
 
-fn make_resolver() -> Option<TokioAsyncResolver> {
-    let (config, opts) = hickory_resolver::system_conf::read_system_conf().ok()?;
-    let resolver = TokioAsyncResolver::builder_tokio()
+fn make_resolver() -> Option<TokioResolver> {
+    let (_config, opts) = hickory_resolver::system_conf::read_system_conf().ok()?;
+    let resolver = TokioResolver::builder_tokio()
         .ok()?
         .with_options(opts);
     // Can't set config easily — use system conf via builder method

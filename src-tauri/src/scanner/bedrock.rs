@@ -87,7 +87,6 @@ fn parse_bedrock_response(data: &[u8], ping_ms: i64) -> Result<BedrockInfo, Stri
     pos += 2;
     if pos + server_id_len > data.len() { return Err("response too short".into()); }
     let server_id = String::from_utf8_lossy(&data[pos..pos+server_id_len]).to_string();
-    pos += server_id_len;
 
     // Split server ID: "MCPE;MOTD;PROTO;VERSION;PLAYERS;MAX;GUID;GAMEMODE;..."
     let parts: Vec<&str> = server_id.split(';').collect();

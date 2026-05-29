@@ -207,8 +207,6 @@
   .card-value.yellow { color: var(--yellow); }
   .card-value.dim { color: var(--text-dim); }
   .card-sub { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
-  .card-value .sub-text { font-size: 14px; font-weight: 400; color: var(--text-dim); }
-
   .scan-progress { border-color: var(--accent2); }
   .mini-progress-track {
     height: 4px; background: var(--bg3); border-radius: 2px; margin: 6px 0; overflow: hidden;

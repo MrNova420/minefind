@@ -62,7 +62,7 @@ pub fn get_ipv6_ips(ips_per_subnet: usize) -> Vec<String> {
         // Parse "/32 prefix" e.g. "2a01:4f8::/32"
         let slash_pos = prefix_str.find('/').unwrap_or(prefix_str.len());
         let base = &prefix_str[..slash_pos];
-        if let Ok(mut addr) = base.parse::<Ipv6Addr>() {
+        if let Ok(addr) = base.parse::<Ipv6Addr>() {
             // The /32 means bits 0-31 are fixed (first 4 bytes)
             // Subnets are in bits 32-47 (next 2 bytes = 65536 values)
             // Host portion is bits 48-127
