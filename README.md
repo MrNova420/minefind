@@ -132,6 +132,19 @@ minefind/
 
 ---
 
+---
+
+## Documentation
+
+Detailed docs in the `docs/` directory:
+
+| Document | Contents |
+|----------|----------|
+| [DEPLOYMENT.md](docs/DEPLOYMENT.md) | VPS deployment, systemd service, free forever hosting options |
+| [DETECTION.md](docs/DETECTION.md) | How servers are found: protocols, legacy ping, bedrock, SRV, whitelist probe |
+| [CYCLES.md](docs/CYCLES.md) | 4-cycle system deep dive, ETA estimates, ranges, IPv6, health pauses |
+| [API.md](docs/API.md) | Full REST API reference with request/response examples |
+
 ## Quick Start
 
 ### Prerequisites
