@@ -298,6 +298,28 @@
         ? `${Math.floor(progress.elapsed_secs / 60)}m${progress.elapsed_secs % 60}s`
         : `${progress.elapsed_secs}s`
   );
+
+  let scanRate = $derived(
+    progress.elapsed_secs > 0 && progress.scanned_ips > 0
+      ? Math.round(progress.scanned_ips / progress.elapsed_secs)
+      : 0
+  );
+
+  let etaSeconds = $derived(
+    scanRate > 0 && progress.total_ips > progress.scanned_ips
+      ? Math.round((progress.total_ips - progress.scanned_ips) / scanRate)
+      : 0
+  );
+
+  let etaStr = $derived(
+    etaSeconds >= 86400
+      ? `~${Math.floor(etaSeconds / 86400)}d ${Math.floor((etaSeconds % 86400) / 3600)}h`
+      : etaSeconds >= 3600
+        ? `~${Math.floor(etaSeconds / 3600)}h ${Math.floor((etaSeconds % 3600) / 60)}m`
+        : etaSeconds >= 60
+          ? `~${Math.floor(etaSeconds / 60)}m`
+          : etaSeconds > 0 ? `~${etaSeconds}s` : ""
+  );
 </script>
 
 <div class="app">
@@ -368,10 +390,13 @@
   </header>
 
   {#if scanRunning}
-    <div class="progress-bar-track" class:waiting={progress.status === "waiting"}>
-      <div class="progress-bar-fill" style="width: {progress.status === "waiting" ? 100 : pct}%"></div>
+    <div class="progress-bar-track" class:waiting={progress.status === "waiting"} class:cooling={progress.status === "cooling"}>
+      <div class="progress-bar-fill" class:cooling={progress.status === "cooling"} style="width: {progress.status === "waiting" || progress.status === "cooling" ? 100 : pct}%"></div>
       <div class="progress-info">
-        {#if progress.status === "waiting"}
+        {#if progress.status === "cooling"}
+          <span>PC health pause</span>
+          <span>14m remaining</span>
+        {:else if progress.status === "waiting"}
           <span>Cycle {progress.cycle} complete ({progress.cycle_type})</span>
           <span>Next in ~30s</span>
         {:else}
@@ -380,20 +405,25 @@
           <span>{progress.found_servers} found</span>
           <span>{progress.current_range}</span>
           <span>{elapsedStr}</span>
+          {#if etaStr}
+            <span>ETA: {etaStr}</span>
+          {/if}
         {/if}
       </div>
     </div>
     <div class="scan-counter">
       <div class="counter-main">
         <span class="counter-num">{Intl.NumberFormat().format(progress?.scanned_ips ?? 0)}</span>
-        <span class="counter-label">IPs scanned</span>
+        <span class="counter-label">IPs scanned {#if scanRate > 0}({Intl.NumberFormat().format(scanRate)}/s){/if}</span>
       </div>
       <div class="counter-secondary">
         <span>{Intl.NumberFormat().format(progress?.total_ips ?? 0)} total</span>
         <span class="counter-dot">·</span>
         <span>{progress?.found_servers ?? 0} servers found</span>
-        <span class="counter-dot">·</span>
-        <span>{pct}%</span>
+        {#if scanRunning && etaStr}
+          <span class="counter-dot">·</span>
+          <span>ETA: {etaStr}</span>
+        {/if}
       </div>
     </div>
   {/if}
@@ -522,7 +552,7 @@
     {#if !dbReady}
       <div class="loading">Connecting...</div>
     {:else if currentView === "dashboard"}
-      <Dashboard {stats} {servers} {cycleStats} {progress} {lifetimeScanned} {dbPushStatus} onRefresh={refreshAll} onPushDb={pushDb} />
+      <Dashboard {stats} {servers} {cycleStats} {progress} {lifetimeScanned} {scanRate} {etaStr} {dbPushStatus} onRefresh={refreshAll} onPushDb={pushDb} />
     {:else if currentView === "servers"}
       <ServerList {servers} {wlReverify} onReverifyWL={reverifyWL} />
     {:else if currentView === "map"}
@@ -530,7 +560,7 @@
     {:else if currentView === "kitty"}
       <Kitty servers={kittyServers} stats={kittyStats} verifyProgress={kittyVerifyProgress} onSync={kittySync} onVerify={kittyVerify} />
     {:else if currentView === "cycles"}
-      <Cycles {cycleData} onStartCycle={(type) => startCycle(type)} />
+      <Cycles {cycleData} {progress} onStartCycle={(type) => startCycle(type)} />
     {/if}
   </main>
 </div>
@@ -591,6 +621,12 @@
   }
   .progress-bar-track.waiting {
     background: rgba(74, 222, 128, 0.08);
+  }
+  .progress-bar-track.cooling {
+    background: rgba(251, 191, 36, 0.08);
+  }
+  .progress-bar-fill.cooling {
+    background: var(--yellow);
   }
   .progress-bar-fill {
     height: 100%; background: var(--accent);

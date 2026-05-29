@@ -1,5 +1,5 @@
 <script>
-  let { cycleData = { summary: {}, history: [], checkpoint: null }, onStartCycle = () => {} } = $props();
+  let { cycleData = { summary: {}, history: [], checkpoint: null }, progress = {}, onStartCycle = () => {} } = $props();
 
   function formatNum(n) {
     if (n == null) return "—";
@@ -71,6 +71,13 @@
   {/if}
 
   <h3>Continue by Type</h3>
+  {#if progress?.running && progress.cycle_type}
+    <div class="active-cycle-banner">
+      <span class="active-dot"></span>
+      <span>Active: <strong>{cycleLabel(progress.cycle_type)}</strong> — {formatNum(progress.scanned_ips)} IPs</span>
+      <span class="active-pct">{progress.total_ips > 0 ? Math.round(progress.scanned_ips / progress.total_ips * 100) : 0}%</span>
+    </div>
+  {/if}
   <div class="table-wrap">
     <div class="table-header type-header">
       <span>Cycle Type</span><span>Runs</span><span>Total Scanned</span><span>Total Found</span><span>Last Run</span><span></span>
@@ -154,6 +161,30 @@
     font-size: 12px;
   }
   .checkpoint-banner .note { color: var(--text-dim); font-size: 11px; }
+
+  .active-cycle-banner {
+    background: rgba(96, 165, 250, 0.08);
+    border: 1px solid rgba(96, 165, 250, 0.2);
+    border-radius: var(--radius);
+    padding: 10px 14px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+  }
+  .active-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent2);
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  .active-pct {
+    margin-left: auto; font-weight: 700; color: var(--accent2); font-size: 14px;
+  }
 
   .table-wrap {
     background: var(--bg2);

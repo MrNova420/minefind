@@ -2,6 +2,7 @@
   let { servers = [], wlReverify = { running: false, total: 0, done: 0 }, onReverifyWL = () => {}, onDedup = () => {} } = $props();
 
   let dedupResult = $state(null);
+  let portFilter = $state("all");
 
   let search = $state("");
   let categoryFilter = $state("all");
@@ -17,7 +18,9 @@
       .filter((s) => {
         if (search && !s.motd?.toLowerCase().includes(search.toLowerCase()) &&
             !s.ip?.includes(search)) return false;
-        if (categoryFilter !== "all" && s.category !== categoryFilter) return false;
+        if (categoryFilter !== "all" && s.category !== categoryFilter)         return false;
+        if (portFilter === "25565" && (s.port || 25565) !== 25565) return false;
+        if (portFilter === "19132" && s.port !== 19132) return false;
         if (wlFilter === "yes" && s.whitelisted !== true) return false;
         if (wlFilter === "no" && s.whitelisted !== false) return false;
         if (wlFilter === "unknown" && s.whitelisted !== null && s.whitelisted !== undefined) return false;
@@ -73,6 +76,12 @@
       <option value="ping">Sort: Ping</option>
       <option value="motd">Sort: Name</option>
     </select>
+    <select bind:value={portFilter}>
+      <option value="all">Port: All</option>
+      <option value="25565">Port: 25565</option>
+      <option value="19132">Port: 19132</option>
+    </select>
+    <button class="export-btn" onclick={() => { const blob = new Blob([JSON.stringify(servers, null, 2)], {type: 'application/json'}); const u = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = u; a.download = 'minefind-servers.json'; a.click(); }}>Export JSON</button>
     <button class="reverify-btn" onclick={onReverifyWL} disabled={wlReverify.running}>
       {wlReverify.running ? `Reverifying ${wlReverify.done}/${wlReverify.total}...` : "Re-verify WL"}
     </button>
@@ -180,6 +189,10 @@
   .reverify-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
   .dedup-btn {
+    padding: 6px 14px; font-size: 12px; background: var(--bg3); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px; cursor: pointer; white-space: nowrap;
+  }
+  .export-btn {
     padding: 6px 14px; font-size: 12px; background: var(--bg3); color: var(--text);
     border: 1px solid var(--border); border-radius: 4px; cursor: pointer; white-space: nowrap;
   }

@@ -1,5 +1,5 @@
 <script>
-  let { stats = {}, servers = [], cycleStats = { cycles: 0, total_servers_found: 0, total_targets_scanned: 0 }, progress = {}, lifetimeScanned = 0, dbPushStatus = {}, onRefresh = () => {}, onPushDb = () => {} } = $props();
+  let { stats = {}, servers = [], cycleStats = { cycles: 0, total_servers_found: 0, total_targets_scanned: 0 }, progress = {}, lifetimeScanned = 0, scanRate = 0, etaStr = "", dbPushStatus = {}, onRefresh = () => {}, onPushDb = () => {} } = $props();
 
   function categoryLabel(cat) {
     const labels = {
@@ -167,9 +167,21 @@
           </div>
         {/each}
       </div>
+      </div>
     </div>
+    <div class="card">
+      <div class="card-label">Scan Rate</div>
+      <div class="card-value">{Intl.NumberFormat().format(scanRate)}</div>
+      <div class="card-sub">IPs/sec</div>
+    </div>
+    {#if etaStr}
+    <div class="card">
+      <div class="card-label">ETA</div>
+      <div class="card-value" style="font-size:20px">{etaStr}</div>
+      <div class="card-sub">until cycle complete</div>
+    </div>
+    {/if}
   </div>
-</div>
 
 <style>
   .dashboard { max-width: 1400px; margin: 0 auto; }
