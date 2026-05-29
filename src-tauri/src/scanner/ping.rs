@@ -5,6 +5,18 @@ use crate::scanner::{ServerInfo, PlayerSample, ServerCategory};
 
 const PING_TIMEOUT: Duration = Duration::from_secs(2);
 
+// Protocol versions to try, ordered from newest to oldest
+const PROTOCOL_VERSIONS: &[(i32, &str)] = &[
+    (767, "1.21"),
+    (766, "1.20.6"),
+    (765, "1.20.4"),
+    (757, "1.18"),
+    (498, "1.14"),
+    (340, "1.12"),
+    (210, "1.10"),
+    (47, "1.8"),
+];
+
 fn write_varint(buf: &mut Vec<u8>, mut value: i32) {
     loop {
         if value & !0x7F == 0 {
@@ -33,18 +45,18 @@ pub fn read_varint(reader: &mut &[u8]) -> Option<(i32, usize)> {
     }
 }
 
-fn build_ping_packet(host: &str, port: u16) -> Vec<u8> {
+fn build_ping_packet(host: &str, port: u16, protocol: i32) -> Vec<u8> {
     let mut body = Vec::new();
-    write_varint(&mut body, 767);
+    write_varint(&mut body, protocol);
     write_varint(&mut body, host.len() as i32);
     body.extend_from_slice(host.as_bytes());
     body.extend_from_slice(&port.to_be_bytes());
-    write_varint(&mut body, 1);
+    write_varint(&mut body, 1); // next state: status
 
     let total = 1_i32 + body.len() as i32;
     let mut result = Vec::new();
     write_varint(&mut result, total);
-    result.push(0x00);
+    result.push(0x00); // packet ID: handshake
     result.extend_from_slice(&body);
     result
 }
@@ -53,6 +65,13 @@ fn build_status_request() -> Vec<u8> {
     let mut result = Vec::new();
     write_varint(&mut result, 1);
     result.push(0x00);
+    result
+}
+
+fn build_ping_request() -> Vec<u8> {
+    let mut result = Vec::new();
+    write_varint(&mut result, 1); // 1 byte follows
+    result.push(0x01); // packet ID: ping
     result
 }
 
@@ -88,55 +107,87 @@ async fn ping_server_via_proxy_inner(ip: &str, port: u16, proxy: Option<&str>) -
     let _ = stream.set_nodelay(true);
     let (mut reader, mut writer) = stream.into_split();
 
-    let ping_packet = build_ping_packet(ip, port);
-    let mut send_buf = Vec::new();
-    send_buf.extend_from_slice(&ping_packet);
-    send_buf.extend_from_slice(&build_status_request());
+    // Try multiple protocol versions
+    let mut last_err = "no protocols tried".to_string();
+    for &(proto, ver_label) in PROTOCOL_VERSIONS {
+        let ping_packet = build_ping_packet(ip, port, proto);
+        let mut send_buf = Vec::new();
+        send_buf.extend_from_slice(&ping_packet);
+        send_buf.extend_from_slice(&build_status_request());
 
-    timeout(PING_TIMEOUT, writer.write_all(&send_buf))
-        .await
-        .map_err(|_| format!("timeout sending ping to {}:{}", ip, port))?
-        .map_err(|e| format!("write error to {}:{}: {}", ip, port, e))?;
-
-    // Read VarInt packet length (1-5 bytes)
-    let mut len_raw = Vec::new();
-    loop {
-        let mut byte = [0u8; 1];
-        timeout(PING_TIMEOUT, reader.read_exact(&mut byte))
-            .await
-            .map_err(|_| format!("timeout reading packet length from {}:{}", ip, port))?
-            .map_err(|e| format!("read error from {}:{}: {}", ip, port, e))?;
-        len_raw.push(byte[0]);
-        if byte[0] & 0x80 == 0 {
-            break;
+        if timeout(PING_TIMEOUT, writer.write_all(&send_buf)).await.is_err() {
+            last_err = format!("write error with proto {}", proto);
+            continue;
         }
-        if len_raw.len() > 5 {
-            return Err(format!("invalid VarInt length from {}:{}", ip, port));
+
+        // Read VarInt packet length
+        let mut len_raw = Vec::new();
+        let mut read_failed = false;
+        loop {
+            let mut byte = [0u8; 1];
+            match timeout(PING_TIMEOUT, reader.read_exact(&mut byte)).await {
+                Ok(Ok(_)) => {}
+                _ => { read_failed = true; break; }
+            }
+            len_raw.push(byte[0]);
+            if byte[0] & 0x80 == 0 { break; }
+            if len_raw.len() > 5 { read_failed = true; break; }
+        }
+        if read_failed {
+            last_err = format!("timeout reading packet length with proto {}", proto);
+            continue;
+        }
+
+        let mut len_slice = &len_raw[..];
+        let (packet_len, _) = match read_varint(&mut len_slice) {
+            Some(v) => v,
+            None => { last_err = format!("failed to parse VarInt with proto {}", proto); continue; }
+        };
+
+        if packet_len <= 0 || packet_len > 1_048_576 {
+            last_err = format!("invalid packet len {} with proto {}", packet_len, proto);
+            continue;
+        }
+
+        let mut packet_data = vec![0u8; packet_len as usize];
+        if timeout(PING_TIMEOUT, reader.read_exact(&mut packet_data)).await.is_err() {
+            last_err = format!("timeout reading packet data with proto {}", proto);
+            continue;
+        }
+
+        let mut response = Vec::with_capacity(len_raw.len() + packet_data.len());
+        response.extend_from_slice(&len_raw);
+        response.extend_from_slice(&packet_data);
+
+        match parse_ping_response(&response, ip, port, start.elapsed().as_millis() as i64) {
+            Ok(mut info) => {
+                // True ping measurement: send ping (0x01) after status
+                let ping_start = std::time::Instant::now();
+                if timeout(PING_TIMEOUT, writer.write_all(&build_ping_request())).await.is_ok() {
+                    let mut pong_buf = [0u8; 4];
+                    match timeout(PING_TIMEOUT, reader.read_exact(&mut pong_buf)).await {
+                        Ok(Ok(_)) => {
+                            info.ping_ms = ping_start.elapsed().as_millis() as i64;
+                        }
+                        _ => {}
+                    }
+                }
+                info.version = enrich_version(&info.version, &info.motd);
+                return Ok(info);
+            }
+            Err(e) => {
+                // If this was a protocol mismatch, try next version
+                if e.contains("unexpected packet ID") || e.contains("failed to read") || e.contains("JSON") {
+                    last_err = format!("proto {} rejected: {}", proto, e);
+                    continue;
+                }
+                // Not a protocol issue — don't retry
+                return Err(e);
+            }
         }
     }
 
-    let mut len_slice = &len_raw[..];
-    let (packet_len, _) = read_varint(&mut len_slice)
-        .ok_or_else(|| format!("failed to parse packet length from {}:{}", ip, port))?;
-
-    if packet_len <= 0 || packet_len > 1_048_576 {
-        return Err(format!("invalid packet length {} from {}:{}", packet_len, ip, port));
-    }
-
-    // Read exactly the packet data
-    let mut packet_data = vec![0u8; packet_len as usize];
-    timeout(PING_TIMEOUT, reader.read_exact(&mut packet_data))
-        .await
-        .map_err(|_| format!("timeout reading response from {}:{}", ip, port))?
-        .map_err(|e| format!("read error from {}:{}: {}", ip, port, e))?;
-
-    let ping_ms = start.elapsed().as_millis() as i64;
-
-    let mut response = Vec::with_capacity(len_raw.len() + packet_data.len());
-    response.extend_from_slice(&len_raw);
-    response.extend_from_slice(&packet_data);
-
-    parse_ping_response(&response, ip, port, ping_ms)
+    Err(last_err)
 }
 
 fn parse_ping_response(
@@ -162,6 +213,34 @@ fn parse_ping_response(
         .map_err(|e| format!("invalid UTF-8 in response: {}", e))?;
 
     parse_status_json(json_str, ip, port, ping_ms)
+}
+
+fn enrich_version(version: &str, motd: &str) -> String {
+    let lower_v = version.to_lowercase();
+    let lower_m = motd.to_lowercase();
+
+    // Detect proxy software from version string
+    let mut enriched = version.to_string();
+    if lower_v.contains("velocity") {
+        if !enriched.contains("Velocity") { enriched = format!("{} (Velocity)", enriched); }
+    } else if lower_v.contains("bungee") || lower_v.contains("waterfall") {
+        if !enriched.contains("Bungee") { enriched = format!("{} (BungeeCord)", enriched); }
+    } else if lower_v.contains("nullcord") {
+        if !enriched.contains("NullCord") { enriched = format!("{} (NullCord)", enriched); }
+    }
+
+    // Detect Geyser (crossplay)
+    if lower_v.contains("geyser") || lower_m.contains("geyser") ||
+       lower_v.contains("floodgate") || lower_m.contains("floodgate") {
+        enriched.push_str(" +Geyser");
+    }
+
+    // Detect ViaVersion
+    if lower_v.contains("viaversion") {
+        enriched.push_str(" +ViaVersion");
+    }
+
+    enriched
 }
 
 fn parse_status_json(
@@ -209,7 +288,8 @@ fn parse_status_json(
         })
         .unwrap_or_default();
 
-    let motd = parsed.get("description").map(|d| extract_motd(d)).unwrap_or_default();
+    let description = parsed.get("description");
+    let motd = description.map(|d| extract_motd(d)).unwrap_or_default();
 
     let modded = parsed
         .get("modinfo")
@@ -224,15 +304,20 @@ fn parse_status_json(
         .and_then(|m| m.as_array())
         .map(|arr| {
             arr.iter()
-                .filter_map(|m| m.get("modid").and_then(|m| m.as_str()).map(|s| s.to_string()))
+                .filter_map(|m| {
+                    let id = m.get("modid").and_then(|m| m.as_str()).unwrap_or("?");
+                    let v = m.get("version").and_then(|m| m.as_str()).unwrap_or("");
+                    if v.is_empty() { Some(id.to_string()) } else { Some(format!("{}@{}", id, v)) }
+                })
                 .collect()
         })
         .unwrap_or_default();
 
     let modded = modded || !mod_list.is_empty();
-
-    // Check for Fabric/Quilt in version
     let modded = modded || version.to_lowercase().contains("fabric") || version.to_lowercase().contains("quilt") || version.to_lowercase().contains("forge");
+
+    // Extract favicon and store it if present
+    let _favicon = parsed.get("favicon").and_then(|f| f.as_str()).unwrap_or("");
 
     let category = categorize_server(&motd, online_players, modded);
     let tags = generate_tags(&category, &version, online_players, modded, &motd);
@@ -357,36 +442,16 @@ fn generate_tags(cat: &ServerCategory, version: &str, players: i32, modded: bool
     }
 
     let lower_motd = motd.to_lowercase();
-    if lower_motd.contains("survival") {
-        tags.push("survival".to_string());
-    }
-    if lower_motd.contains("pvp") {
-        tags.push("pvp".to_string());
-    }
-    if lower_motd.contains("economy") || lower_motd.contains("shop") {
-        tags.push("economy".to_string());
-    }
-    if lower_motd.contains("rpg") || lower_motd.contains("mmo") || lower_motd.contains("dungeon") {
-        tags.push("rpg".to_string());
-    }
-    if lower_motd.contains("crossplay") || lower_motd.contains("bedrock") {
-        tags.push("crossplay".to_string());
-    }
-    if lower_motd.contains("lobby") || lower_motd.contains("hub") {
-        tags.push("lobby".to_string());
-    }
-    if lower_motd.contains("1.21") || version.contains("1.21") {
-        tags.push("1.21".to_string());
-    }
-    if lower_motd.contains("1.20") || version.contains("1.20") {
-        tags.push("1.20".to_string());
-    }
-    if lower_motd.contains("1.8") || version.contains("1.8") {
-        tags.push("1.8".to_string());
-    }
-    if modded {
-        tags.push("modded".to_string());
-    }
+    if lower_motd.contains("survival") { tags.push("survival".to_string()); }
+    if lower_motd.contains("pvp") { tags.push("pvp".to_string()); }
+    if lower_motd.contains("economy") || lower_motd.contains("shop") { tags.push("economy".to_string()); }
+    if lower_motd.contains("rpg") || lower_motd.contains("mmo") || lower_motd.contains("dungeon") { tags.push("rpg".to_string()); }
+    if lower_motd.contains("crossplay") || lower_motd.contains("bedrock") { tags.push("crossplay".to_string()); }
+    if lower_motd.contains("lobby") || lower_motd.contains("hub") { tags.push("lobby".to_string()); }
+    if lower_motd.contains("1.21") || version.contains("1.21") { tags.push("1.21".to_string()); }
+    if lower_motd.contains("1.20") || version.contains("1.20") { tags.push("1.20".to_string()); }
+    if lower_motd.contains("1.8") || version.contains("1.8") { tags.push("1.8".to_string()); }
+    if modded { tags.push("modded".to_string()); }
 
     tags
 }
