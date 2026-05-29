@@ -236,6 +236,7 @@ async fn main() {
         .route("/api/serverlist/seed", post(api_serverlist_seed))
         .route("/api/serverlist/stats", get(api_serverlist_stats))
         .route("/api/srv/{domain}", get(api_srv_lookup))
+        .route("/api/ping/{ip}", get(api_ping_ip))
         .route("/api/db/push", post(api_db_push))
         .route("/api/db/push/status", get(api_db_push_status))
         .route("/api/servers/reverify-wl", post(api_reverify_wl))
@@ -416,6 +417,23 @@ async fn api_srv_lookup(
         "domain": domain,
         "records": records.iter().map(|(h, p)| serde_json::json!({"host": h, "port": p})).collect::<Vec<_>>(),
     }))
+}
+
+async fn api_ping_ip(
+    axum::extract::Path(ip): axum::extract::Path<String>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    State(ctx): State<Arc<AppCtx>>,
+) -> Json<serde_json::Value> {
+    let port: u16 = params.get("port").and_then(|p| p.parse().ok()).unwrap_or(25565);
+    match scanner::ping::ping_server(&ip, port).await {
+        Ok(info) => {
+            if let Ok(g) = get_db(&ctx) {
+                let _ = g.as_ref().unwrap().upsert_server(&info);
+            }
+            Json(serde_json::json!({"found": true, "ip": ip, "port": port, "motd": info.motd, "version": info.version, "players": info.online_players}))
+        }
+        Err(e) => Json(serde_json::json!({"found": false, "error": e})),
+    }
 }
 
 async fn api_set_rescan(

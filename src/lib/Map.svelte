@@ -1,61 +1,73 @@
 <script>
   let { servers = [] } = $props();
 
+  function detectProvider(ip) {
+    const o = parseInt((ip || "").split(".")[0]);
+    // Hetzner
+    if (o === 5 || o === 49 || o === 65 || o === 88 || o === 95 || o === 116 || o === 136 || o === 142 || o === 144 || o === 148 || o === 157 || o === 167 || o === 168 || o === 176 || o === 188 || o === 195 || o === 213) return "Hetzner";
+    // OVH
+    if (o === 51 || o === 54 || o === 141 || o === 145) return "OVH";
+    // AWS
+    if (o === 3 || o === 13 || o === 15 || o === 18 || o === 35 || o === 43 || o === 44 || o === 52 || o === 54 || o === 63 || o === 64 || o === 75 || o === 96 || o === 99 || o === 107 || o === 140 || o === 150 || o === 157 || o === 176 || o === 184 || o === 185 || o === 204 || o === 216) return "AWS";
+    // DigitalOcean
+    if (o === 137 || o === 142 || o === 157 || o === 159 || o === 161 || o === 165 || o === 167 || o === 170) return "DigitalOcean";
+    // Vultr
+    if (o === 45 || o === 108 || o === 149 || o === 155 || o === 199 || o === 207) return "Vultr";
+    // Linode
+    if (o === 23 || o === 45 || o === 50 || o === 72 || o === 96 || o === 139 || o === 172) return "Linode";
+    // Contabo
+    if (o === 161 || o === 173 || o === 178 || o === 185) return "Contabo";
+    return "Other";
+  }
+
   let grouped = $derived(
     (servers || []).reduce((acc, s) => {
-      const firstOctet = (s.ip || "").split(".")[0];
-      const region = ipRegion(firstOctet);
-      if (!acc[region]) acc[region] = [];
-      acc[region].push(s);
+      const provider = detectProvider(s.ip);
+      if (!acc[provider]) acc[provider] = { servers: [], players: 0, modded: 0, openWL: 0 };
+      acc[provider].servers.push(s);
+      acc[provider].players += s.online_players || 0;
+      if (s.modded) acc[provider].modded++;
+      if (s.whitelisted === false) acc[provider].openWL++;
       return acc;
     }, {})
   );
 
-  function ipRegion(first) {
-    const n = parseInt(first);
-    if (n >= 1 && n <= 9) return "US East";
-    if (n >= 13 && n <= 56) return "US West";
-    if (n >= 62 && n <= 95) return "Europe";
-    if (n >= 88 && n <= 95) return "Europe";
-    if (n >= 130 && n <= 140) return "US East";
-    if (n >= 141 && n <= 195) return "Europe";
-    if (n >= 196 && n <= 200) return "South America";
-    if (n >= 201 && n <= 223) return "Asia";
-    return "Unknown";
-  }
+  let sorted = $derived(
+    Object.entries(grouped).sort((a, b) => b[1].servers.length - a[1].servers.length)
+  );
+
+  let maxServers = $derived(Math.max(...sorted.map(([, d]) => d.servers.length), 1));
 </script>
 
 <div class="map-view">
-  <h2>Server Distribution by Region</h2>
+  <h2>Server Distribution by Provider</h2>
   <div class="grid">
-    {#each Object.entries(grouped) as [region, regionServers]}
-      <div class="region-card">
-        <div class="region-header">
-          <span class="region-name">{region}</span>
-          <span class="region-count">{regionServers.length}</span>
+    {#each sorted as [provider, data]}
+      <div class="provider-card">
+        <div class="prov-header">
+          <span class="prov-name">{provider}</span>
+          <span class="prov-count">{data.servers.length}</span>
         </div>
-        <div class="region-stats">
-          <div>
-            Online:
-            {regionServers.reduce((s, v) => s + (v.online_players || 0), 0)}
-          </div>
-          <div>
-            Not WL: {regionServers.filter((s) => s.whitelisted === false).length}
-          </div>
-          <div>
-            Modded: {regionServers.filter((s) => s.modded).length}
-          </div>
+        <div class="prov-bar">
+          <div class="prov-fill" style="width: {(data.servers.length / maxServers) * 100}%"></div>
+        </div>
+        <div class="prov-stats">
+          <span>{data.players.toLocaleString()} players</span>
+          <span class="dot">·</span>
+          <span>{data.openWL} open</span>
+          <span class="dot">·</span>
+          <span>{data.modded} modded</span>
         </div>
         <div class="mini-list">
-          {#each regionServers.slice(0, 5) as s}
+          {#each data.servers.slice(0, 3) as s}
             <div class="mini-row">
               <span class="ip">{s.ip}:{s.port ?? 25565}</span>
               <span class="players">{s.online_players ?? 0}/{s.max_players ?? "?"}</span>
-              <span class="version">{s.version?.slice(0, 8)}</span>
+              <span class="version">{s.version?.slice(0, 12)}</span>
             </div>
           {/each}
-          {#if regionServers.length > 5}
-            <div class="more">+{regionServers.length - 5} more</div>
+          {#if data.servers.length > 3}
+            <div class="more">+{data.servers.length - 3} more servers</div>
           {/if}
         </div>
       </div>
@@ -64,81 +76,26 @@
 </div>
 
 <style>
-  .map-view {
-    max-width: 1200px;
-    margin: 0 auto;
-  }
+  .map-view { max-width: 1200px; margin: 0 auto; }
+  h2 { font-size: 16px; font-weight: 600; margin-bottom: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
 
-  h2 {
-    font-size: 16px;
-    font-weight: 600;
-    margin-bottom: 16px;
-    color: var(--text-dim);
+  .provider-card {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px;
   }
+  .prov-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .prov-name { font-weight: 600; font-size: 14px; }
+  .prov-count { background: var(--bg3); padding: 2px 8px; border-radius: 10px; font-size: 12px; color: var(--text-dim); }
 
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-    gap: 16px;
-  }
+  .prov-bar { height: 6px; background: var(--bg3); border-radius: 3px; overflow: hidden; margin-bottom: 8px; }
+  .prov-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.5s; min-width: 2px; }
 
-  .region-card {
-    background: var(--bg2);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 16px;
-  }
+  .prov-stats { display: flex; gap: 6px; font-size: 11px; color: var(--text-dim); margin-bottom: 10px; }
+  .dot { color: var(--border); }
 
-  .region-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 8px;
-  }
-
-  .region-name {
-    font-weight: 600;
-    font-size: 15px;
-  }
-
-  .region-count {
-    background: var(--bg3);
-    padding: 2px 8px;
-    border-radius: 10px;
-    font-size: 12px;
-    color: var(--text-dim);
-  }
-
-  .region-stats {
-    display: flex;
-    gap: 12px;
-    font-size: 12px;
-    color: var(--text-dim);
-    margin-bottom: 12px;
-  }
-
-  .mini-list {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .mini-row {
-    display: flex;
-    gap: 8px;
-    font-size: 11px;
-    font-family: "SF Mono", "Fira Code", monospace;
-    color: var(--text-dim);
-  }
-
-  .mini-row .ip {
-    color: var(--text);
-    flex: 1;
-  }
-
-  .more {
-    font-size: 11px;
-    color: var(--accent);
-    margin-top: 4px;
-  }
+  .mini-list { display: flex; flex-direction: column; gap: 3px; }
+  .mini-row { display: flex; gap: 6px; font-size: 11px; font-family: "SF Mono", "Fira Code", monospace; color: var(--text-dim); }
+  .mini-row .ip { color: var(--text); flex: 1; }
+  .more { font-size: 11px; color: var(--accent); margin-top: 4px; }
 </style>

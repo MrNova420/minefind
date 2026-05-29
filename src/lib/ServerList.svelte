@@ -91,6 +91,26 @@
     <button class="export-btn" onclick={async () => { const r = await fetch('/api/serverlist/seed', {method:'POST'}); const d = await r.json(); alert(d?.ok ? `Seeded ${d.seeded} IPs, ${d.added} new` : 'Seed failed'); }}>
       Seed IPs
     </button>
+    <input type="text" class="srv-input" placeholder="mc.example.com" id="srvDomain" />
+    <button class="srv-btn" onclick={async () => {
+      const domain = document.getElementById('srvDomain').value.trim();
+      if (!domain) return;
+      const r = await fetch(`/api/srv/${domain}`);
+      const d = await r.json();
+      if (d.records?.length > 0) {
+        let added = 0;
+        for (const rec of d.records) {
+          const r2 = await fetch(`/api/ping/${rec.host}?port=${rec.port}`);
+          const d2 = await r2.json();
+          if (d2?.found) added++;
+        }
+        alert(`Resolved ${d.records.length} records, ${added} servers found`);
+      } else {
+        alert(`No SRV records found for ${domain}`);
+      }
+    }}>
+      SRV Lookup
+    </button>
     <span class="count">{filtered.length} servers</span>
   </div>
 
@@ -198,6 +218,14 @@
   .export-btn {
     padding: 6px 14px; font-size: 12px; background: var(--bg3); color: var(--text);
     border: 1px solid var(--border); border-radius: 4px; cursor: pointer; white-space: nowrap;
+  }
+  .srv-input {
+    width: 160px; padding: 5px 8px; font-size: 11px;
+    font-family: "SF Mono", "Fira Code", monospace;
+  }
+  .srv-btn {
+    padding: 6px 14px; font-size: 12px; background: var(--accent2); color: white;
+    border: 1px solid var(--accent2); border-radius: 4px; cursor: pointer; white-space: nowrap;
   }
   .dedup-result {
     padding: 8px 12px; margin-bottom: 12px; border-radius: var(--radius);
