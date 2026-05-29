@@ -139,7 +139,7 @@ async fn main() {
         scan_probe_wl: Arc::new(AtomicBool::new(true)),
         scan_proxy: std::sync::Mutex::new(None),
         scan_force_proxy: Arc::new(AtomicBool::new(false)),
-        scan_concurrency: Arc::new(AtomicU64::new(6000)),
+        scan_concurrency: Arc::new(AtomicU64::new(4000)),
         scan_progress: std::sync::Mutex::new(ScanProgress {
             cycle_type: "stopped".into(),
             cycle: 0,
@@ -591,7 +591,7 @@ async fn api_scan_start(
     }
 
     let probe_wl = params.get("probe_whitelist").map(|v| v == "1").unwrap_or(true);
-    let concurrency = params.get("concurrency").and_then(|v| v.parse::<u64>().ok()).unwrap_or(6000).max(100).min(10000);
+    let concurrency = params.get("concurrency").and_then(|v| v.parse::<u64>().ok()).unwrap_or(4000).max(100).min(10000);
 
     let explicit_proxy = params.get("proxy").filter(|s| !s.is_empty()).cloned();
     let stored_proxy = ctx.scan_proxy.lock().unwrap().clone();
@@ -841,7 +841,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                 let task_deep = is_deep;
 
                 handles.push(tokio::spawn(async move {
-                    let _held = permit;
+                    drop(permit); // Release semaphore immediately — join_all holds the real work
                     let mut found_this_ip: u64 = 0;
                     let proxy_ref: Option<String> = proxy_for_task;
 
@@ -1032,7 +1032,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                 let task_deep = is_deep;
 
                 handles.push(tokio::spawn(async move {
-                    let _held = permit;
+                    drop(permit); // Release semaphore immediately — join_all holds the real work
                     let mut found_this_ip: u64 = 0;
                     let proxy_ref: Option<String> = proxy_for_task;
 
@@ -1152,8 +1152,8 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                 }));
 
                 scanned_ips += 1;
-
-                if scanned_ips % 200 == 0 {
+                // Drain handles + update progress every 50 IPs
+                if scanned_ips % 50 == 0 {
                     handles.retain(|h| !h.is_finished());
                     {
                         let mut p = ctx.scan_progress.lock().unwrap();
@@ -1176,7 +1176,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
             let range_found = found_count.load(Ordering::SeqCst).saturating_sub(range_found_before);
             let _ = db.record_range_density(&range_name, range_found as i64, cycle_name);
         }
-        } // end IPv4 else block
+    }
 
         // Drain remaining handles
         for h in handles.drain(..) {

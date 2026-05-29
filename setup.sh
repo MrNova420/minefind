@@ -101,6 +101,20 @@ for f in servers.db kitty.db lifetime_counter.txt; do
     fi
 done
 
+# ─── TCP Stack Tuning ───
+echo ""
+echo "Optimizing network settings..."
+if [ "$(id -u)" -eq 0 ] 2>/dev/null || sudo -n true 2>/dev/null; then
+    sudo sysctl -w net.ipv4.tcp_tw_reuse=1 >/dev/null 2>&1 || true
+    sudo sysctl -w net.ipv4.ip_local_port_range="1024 65535" >/dev/null 2>&1 || true
+    sudo sysctl -w net.ipv4.tcp_fin_timeout=10 >/dev/null 2>&1 || true
+    sudo sysctl -w net.core.somaxconn=8192 >/dev/null 2>&1 || true
+    ulimit -n 1048576 2>/dev/null || true
+    echo -e "${GREEN}[OK]${NC}   TCP stack optimized for scanning"
+else
+    echo -e "${YELLOW}[!]${NC}   Run with sudo to auto-tune TCP: sudo sysctl -w net.ipv4.tcp_tw_reuse=1"
+fi
+
 # ─── Setup git ───
 echo ""
 echo "Checking git configuration..."

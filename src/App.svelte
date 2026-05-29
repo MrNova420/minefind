@@ -16,7 +16,7 @@
   let proxyAvailable = $state(false);
   let forceProxy = $state(false);
   let showSettings = $state(false);
-  let concurrency = $state(6000);
+  let concurrency = $state(4000);
   let rescanAll = $state(true);
   let cycleToggles = $state({ ipv4_fast: true, ipv6_targeted: true, ipv4_deep: true, ipv6_deep: true });
   let hasIpv6 = $state(true);
@@ -252,8 +252,9 @@
     while (scanRunning) {
       const p = await api("/scan/status");
       if (p) progress = p;
-      if (p?.cycle % 3 === 0) await pollCycleStats();
-      await new Promise((r) => setTimeout(r, 1000));
+      // Poll slower for deep cycles (ALL ports)
+      const delay = p?.cycle_type?.includes("deep") ? 5000 : 1000;
+      await new Promise((r) => setTimeout(r, delay));
     }
     progress = { scanned_ips: 0, total_ips: 0, found_servers: 0, current_range: "", elapsed_secs: 0, cycle: 0, cycle_type: "", status: "stopped", lifetime_scanned: 0 };
   }
