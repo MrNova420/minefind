@@ -800,12 +800,12 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                                         let now = chrono::Utc::now().to_rfc3339();
                                         scanner::ServerInfo {
                                             ip: a.clone(), port: p,
-                                            motd: bi.motd, version: format!("Bedrock {}", bi.version),
+                                            motd: bi.motd, version: format!("{} {} {}", bi.edition, bi.version, if bi.sub_motd.is_empty() { "".into() } else { bi.sub_motd.clone() }),
                                             protocol: bi.protocol, online_players: bi.online_players,
                                             max_players: bi.max_players, ping_ms: bi.ping_ms,
                                             modded: false, mod_list: vec![], whitelisted: None,
                                             category: scanner::ServerCategory::from_str("unknown"),
-                                            tags: vec!["bedrock".to_string(), bi.game_mode.clone()],
+                                            tags: vec!["bedrock".to_string(), bi.game_mode.clone(), bi.edition.clone()],
                                             player_sample: vec![], last_seen: now.clone(), first_seen: now,
                                         }
                                     })
@@ -845,7 +845,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                                     let now = chrono::Utc::now().to_rfc3339();
                                     Ok(scanner::ServerInfo {
                                         ip: a_str.clone(), port,
-                                        motd: bi.motd, version: format!("Bedrock {}", bi.version),
+                                        motd: bi.motd, version: format!("{} {} {}", bi.edition, bi.version, if bi.sub_motd.is_empty() { "".into() } else { bi.sub_motd.clone() }),
                                         protocol: bi.protocol, online_players: bi.online_players,
                                         max_players: bi.max_players, ping_ms: bi.ping_ms,
                                         modded: false, mod_list: vec![],
@@ -989,12 +989,12 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                                         let now = chrono::Utc::now().to_rfc3339();
                                         scanner::ServerInfo {
                                             ip: a.clone(), port: p,
-                                            motd: bi.motd, version: format!("Bedrock {}", bi.version),
+                                            motd: bi.motd, version: format!("{} {} {}", bi.edition, bi.version, if bi.sub_motd.is_empty() { "".into() } else { bi.sub_motd.clone() }),
                                             protocol: bi.protocol, online_players: bi.online_players,
                                             max_players: bi.max_players, ping_ms: bi.ping_ms,
                                             modded: false, mod_list: vec![], whitelisted: None,
                                             category: scanner::ServerCategory::from_str("unknown"),
-                                            tags: vec!["bedrock".to_string(), bi.game_mode.clone()],
+                                            tags: vec!["bedrock".to_string(), bi.game_mode.clone(), bi.edition.clone()],
                                             player_sample: vec![], last_seen: now.clone(), first_seen: now,
                                         }
                                     })
@@ -1035,7 +1035,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                                     let now = chrono::Utc::now().to_rfc3339();
                                     Ok(scanner::ServerInfo {
                                         ip: a_str.clone(), port,
-                                        motd: bi.motd, version: format!("Bedrock {}", bi.version),
+                                        motd: bi.motd, version: format!("{} {} {}", bi.edition, bi.version, if bi.sub_motd.is_empty() { "".into() } else { bi.sub_motd.clone() }),
                                         protocol: bi.protocol, online_players: bi.online_players,
                                         max_players: bi.max_players, ping_ms: bi.ping_ms,
                                         modded: false, mod_list: vec![],
@@ -1162,10 +1162,24 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
             cycle_order_idx = (cycle_order_idx + 1) % cycle_order.len();
         }
 
-        // Between cycles: poll cancel every 5s for 30s
+        // Between cycles: poll cancel every 5s for 30s + recheck timed-out IPs
         if !cancel.load(Ordering::SeqCst) {
             for _ in 0..6 {
                 if cancel.load(Ordering::SeqCst) { break; }
+                // Recheck timed-out IPs during pause
+                let pending = db.get_pending_rechecks(50).unwrap_or_default();
+                for (ip, port, _attempts) in pending {
+                    if cancel.load(Ordering::SeqCst) { break; }
+                    if let Ok(mut info) = scanner::ping::ping_server(&ip, port).await {
+                        let cat = categorize_from_info(&info);
+                        let tags = crate::scanner::ping::generate_tags_info(&info);
+                        info.category = cat;
+                        info.tags = tags;
+                        let _ = db.upsert_server(&info);
+                        let _ = db.remove_recheck(&ip, port);
+                        log::info!("Recheck found server: {}:{} v={}", ip, port, info.version);
+                    }
+                }
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         }

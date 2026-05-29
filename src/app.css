@@ -77,3 +77,63 @@ input:focus, select:focus {
   background: var(--border);
   border-radius: 3px;
 }
+
+/* Mobile responsive */
+@media (max-width: 768px) {
+  header {
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 6px 8px;
+  }
+  nav {
+    order: 3;
+    width: 100%;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    gap: 2px;
+  }
+  .nav-btn {
+    padding: 4px 8px;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .scan-btn {
+    padding: 4px 10px;
+    font-size: 11px;
+  }
+  .status-badge {
+    font-size: 9px;
+  }
+  .settings-panel {
+    padding: 8px 12px;
+  }
+  .setting-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+  .filters {
+    flex-wrap: wrap;
+  }
+  .filters input {
+    min-width: 120px;
+  }
+  .counter-num {
+    font-size: 20px;
+  }
+  .progress-bar-track {
+    height: 20px;
+  }
+  .progress-info {
+    font-size: 9px;
+    gap: 6px;
+  }
+  .scan-counter {
+    flex-direction: column;
+    gap: 4px;
+    padding: 4px 8px;
+  }
+  main {
+    padding: 8px;
+  }
+}

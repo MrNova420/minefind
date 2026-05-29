@@ -18,6 +18,9 @@ pub struct BedrockInfo {
     pub online_players: i32,
     pub max_players: i32,
     pub game_mode: String,
+    pub edition: String,
+    pub sub_motd: String,
+    pub server_guid: String,
     pub ping_ms: i64,
 }
 
@@ -100,5 +103,8 @@ fn parse_bedrock_response(data: &[u8], ping_ms: i64) -> Result<BedrockInfo, Stri
         max_players: parts.get(5).and_then(|s| s.parse().ok()).unwrap_or(0),
         game_mode: parts.get(7).unwrap_or(&"").to_string(),
         ping_ms,
+        edition: if server_id.contains("MCEE") { "Education".into() } else { "Bedrock".into() },
+        sub_motd: parts.get(8).unwrap_or(&"").to_string(),
+        server_guid: parts.get(6).unwrap_or(&"").to_string(),
     })
 }

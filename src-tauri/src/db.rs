@@ -90,7 +90,15 @@ impl Database {
             );"
         )?;
         let _ = conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_rd_prefix ON range_density(ip_prefix);
+            "            CREATE TABLE IF NOT EXISTS pending_recheck (
+                ip TEXT NOT NULL,
+                port INTEGER NOT NULL DEFAULT 25565,
+                attempts INTEGER DEFAULT 0,
+                next_check TEXT,
+                first_seen TEXT NOT NULL,
+                PRIMARY KEY (ip, port)
+            );
+            CREATE INDEX IF NOT EXISTS idx_rd_prefix ON range_density(ip_prefix);
              CREATE INDEX IF NOT EXISTS idx_rd_found ON range_density(servers_found);
              ALTER TABLE scan_history ADD COLUMN cycle_type TEXT DEFAULT '';"
         );
@@ -350,5 +358,36 @@ impl Database {
             "duplicates": dupes.len(),
             "duplicate_pairs": dupes,
         }))
+    }
+
+    // --- Pending Recheck (timed-out IPs) ---
+
+    pub fn add_recheck(&self, ip: &str, port: u16) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT OR IGNORE INTO pending_recheck (ip, port, attempts, next_check, first_seen)
+             VALUES (?1, ?2, 0, datetime('now', '+30 minutes'), ?3)
+             ON CONFLICT(ip, port) DO UPDATE SET attempts = attempts + 1, next_check = datetime('now', '+30 minutes')",
+            params![ip, port as i64, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_pending_rechecks(&self, limit: i64) -> Result<Vec<(String, u16, i64)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT ip, port, attempts FROM pending_recheck WHERE next_check <= datetime('now') AND attempts < 3 ORDER BY attempts ASC LIMIT ?1"
+        )?;
+        let rows = stmt.query_map(params![limit], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u16, row.get::<_, i64>(2)?))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn remove_recheck(&self, ip: &str, port: u16) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM pending_recheck WHERE ip = ?1 AND port = ?2", params![ip, port as i64])?;
+        Ok(())
     }
 }
