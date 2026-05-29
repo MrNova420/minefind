@@ -832,6 +832,8 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
         }
 
         let sem = Arc::new(tokio::sync::Semaphore::new(concurrency));
+        let deep_port_sem = Arc::new(tokio::sync::Semaphore::new(500));
+
         let mut handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
         let mut last_checkpoint_at: u64 = scanned_ips;
         let mut last_backup_time = Instant::now();
@@ -869,16 +871,19 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                 let task_tx = db_tx.clone();
                 let task_known = known_set.clone();
                 let task_deep = is_deep;
+                let dps = deep_port_sem.clone();
 
                 handles.push(tokio::spawn(async move {
-                    let _permit = permit;
                     let mut found_this_ip: u64 = 0;
                     let proxy_ref: Option<String> = proxy_for_task;
+                    let _permit = permit;
+                    let psem = dps;
 
                     if task_deep && task_ports.len() > 2 {
-                        // Deep cycle: probe all ports in batches of 200
-                        for chunk in task_ports.chunks(200) {
-                            let port_futures: Vec<_> = chunk.iter().map(|&p| {
+                        // Deep cycle: first chunk holds IP permit, remaining use port semaphore
+                        let mut chunks = task_ports.chunks(200);
+                        if let Some(first_chunk) = chunks.next() {
+                            let port_futures: Vec<_> = first_chunk.iter().map(|&p| {
                             let a = a_str.clone();
                             let px = proxy_ref.clone();
                             let c2 = c.clone();
@@ -924,11 +929,62 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                             info.tags = crate::scanner::ping::generate_tags_info(&info);
                             let _ = task_tx.send(info).await;
                         }
-                        } // end chunk loop
+                        }
+                        drop(_permit); // Release IP permit after priority ports
+                        for chunk in chunks {
+                            let port_futures: Vec<_> = chunk.iter().map(|&p| {
+                            let a = a_str.clone();
+                            let px = proxy_ref.clone();
+                            let c2 = c.clone();
+                            let ps = psem.clone();
+                            async move {
+                                if c2.load(Ordering::SeqCst) { return None; }
+                                let _pp = ps.acquire_owned().await.unwrap();
+                                let px_r: Option<&str> = px.as_deref();
+                                let is_bedroom = p >= 19130 && p <= 19140;
+                                let r: Result<scanner::ServerInfo, String> = if is_bedroom {
+                                    scanner::bedrock::ping_bedrock(&a, p).await.map(|bi| {
+                                        let now = chrono::Utc::now().to_rfc3339();
+                                        scanner::ServerInfo {
+                                            ip: a.clone(), port: p,
+                                            motd: bi.motd, version: format!("{} {} {}", bi.edition, bi.version, if bi.sub_motd.is_empty() { "".into() } else { bi.sub_motd.clone() }),
+                                            protocol: bi.protocol, online_players: bi.online_players,
+                                            max_players: bi.max_players, ping_ms: bi.ping_ms,
+                                            modded: false, mod_list: vec![], whitelisted: None,
+                                            category: scanner::ServerCategory::from_str("unknown"),
+                                            tags: vec!["bedrock".to_string(), bi.game_mode.clone(), bi.edition.clone()],
+                                            player_sample: vec![], last_seen: now.clone(), first_seen: now,
+                                        }
+                                    })
+                                } else if let Some(pr) = px_r {
+                                    scanner::ping::ping_server_via_proxy(&a, p, Some(pr)).await
+                                } else {
+                                    scanner::ping::ping_server_deep(&a, p).await
+                                };
+                                r.ok().map(|info| (info, p))
+                            }
+                        }).collect();
+                        let results = futures::future::join_all(port_futures).await;
+                        for (mut info, port) in results.into_iter().flatten() {
+                            let key = format!("{}:{}", info.ip, port);
+                            let is_new = {
+                                let mut set = task_known.lock().unwrap();
+                                if set.contains(&key) { false } else { set.insert(key.clone()); true }
+                            };
+                            if is_new { found_this_ip += 1; }
+                            if do_probe {
+                                let px_r: Option<&str> = proxy_ref.as_deref();
+                                info.whitelisted = scanner::probe::check_whitelist(&info, px_r).await;
+                            }
+                            info.category = categorize_from_info(&info);
+                            info.tags = crate::scanner::ping::generate_tags_info(&info);
+                            let _ = task_tx.send(info).await;
+                        }
+                        } // end remaining chunks
                     } else {
                         // Fast cycle: sequential ports
-                        for &port in &task_ports {
-                        if c.load(Ordering::SeqCst) { break; }
+                    for &port in &task_ports {
+                    if c.load(Ordering::SeqCst) { break; }
                         let px: Option<&str> = proxy_ref.as_deref();
                         let is_bedrock = port >= 19130 && port <= 19140;
                         let r: Result<scanner::ServerInfo, String> = if is_bedrock {
@@ -1063,16 +1119,18 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                 let task_tx = db_tx.clone();
                 let task_known = known_set.clone();
                 let task_deep = is_deep;
+                let dps = deep_port_sem.clone();
 
                 handles.push(tokio::spawn(async move {
-                    let _permit = permit;
+                    let psem = dps;
                     let mut found_this_ip: u64 = 0;
                     let proxy_ref: Option<String> = proxy_for_task;
+                    let _permit = permit;
 
                     if task_deep && task_ports.len() > 2 {
-                        // Deep cycle: probe all ports in batches of 200
-                        for chunk in task_ports.chunks(200) {
-                            let port_futures: Vec<_> = chunk.iter().map(|&p| {
+                        let mut chunks = task_ports.chunks(200);
+                        if let Some(first_chunk) = chunks.next() {
+                            let port_futures: Vec<_> = first_chunk.iter().map(|&p| {
                             let a = a_str.clone();
                             let px = proxy_ref.clone();
                             let c2 = c.clone();
@@ -1118,7 +1176,58 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                             info.tags = crate::scanner::ping::generate_tags_info(&info);
                             let _ = task_tx.send(info).await;
                         }
-                        } // end chunk loop
+                        } // end first chunk
+                        drop(_permit); // Release IP permit after priority ports
+                        for chunk in chunks {
+                            let port_futures: Vec<_> = chunk.iter().map(|&p| {
+                            let a = a_str.clone();
+                            let px = proxy_ref.clone();
+                            let c2 = c.clone();
+                            let ps = psem.clone();
+                            async move {
+                                if c2.load(Ordering::SeqCst) { return None; }
+                                let _pp = ps.acquire_owned().await.unwrap();
+                                let px_r: Option<&str> = px.as_deref();
+                                let is_bedroom = p >= 19130 && p <= 19140;
+                                let r: Result<scanner::ServerInfo, String> = if is_bedroom {
+                                    scanner::bedrock::ping_bedrock(&a, p).await.map(|bi| {
+                                        let now = chrono::Utc::now().to_rfc3339();
+                                        scanner::ServerInfo {
+                                            ip: a.clone(), port: p,
+                                            motd: bi.motd, version: format!("{} {} {}", bi.edition, bi.version, if bi.sub_motd.is_empty() { "".into() } else { bi.sub_motd.clone() }),
+                                            protocol: bi.protocol, online_players: bi.online_players,
+                                            max_players: bi.max_players, ping_ms: bi.ping_ms,
+                                            modded: false, mod_list: vec![], whitelisted: None,
+                                            category: scanner::ServerCategory::from_str("unknown"),
+                                            tags: vec!["bedrock".to_string(), bi.game_mode.clone(), bi.edition.clone()],
+                                            player_sample: vec![], last_seen: now.clone(), first_seen: now,
+                                        }
+                                    })
+                                } else if let Some(pr) = px_r {
+                                    scanner::ping::ping_server_via_proxy(&a, p, Some(pr)).await
+                                } else {
+                                    scanner::ping::ping_server_deep(&a, p).await
+                                };
+                                r.ok().map(|info| (info, p))
+                            }
+                        }).collect();
+                        let results = futures::future::join_all(port_futures).await;
+                        for (mut info, port) in results.into_iter().flatten() {
+                            let key = format!("{}:{}", info.ip, port);
+                            let is_new = {
+                                let mut set = task_known.lock().unwrap();
+                                if set.contains(&key) { false } else { set.insert(key.clone()); true }
+                            };
+                            if is_new { found_this_ip += 1; }
+                            if do_probe {
+                                let px_r: Option<&str> = proxy_ref.as_deref();
+                                info.whitelisted = scanner::probe::check_whitelist(&info, px_r).await;
+                            }
+                            info.category = categorize_from_info(&info);
+                            info.tags = crate::scanner::ping::generate_tags_info(&info);
+                            let _ = task_tx.send(info).await;
+                        }
+                        } // end remaining chunks
                     } else {
                         // Fast cycle: sequential ports
                     for &port in &task_ports {
