@@ -11,7 +11,6 @@
   let dbReady = $state(false);
   let scanRunning = $state(false);
   let probeWhitelist = $state(true);
-  let includeResidential = $state(false);
   let proxyAddr = $state("");
   let proxyAvailable = $state(false);
   let forceProxy = $state(false);
@@ -464,15 +463,6 @@
         </div>
         <label class="toggle">
           <input type="checkbox" checked={probeWhitelist} onchange={toggleWLProbe} disabled={scanRunning} />
-        </label>
-      </div>
-      <div class="setting-row">
-        <div class="setting-info">
-          <span class="setting-label">Residential ranges</span>
-          <span class="setting-desc">Also scan home ISP ranges for more servers</span>
-        </div>
-        <label class="toggle">
-          <input type="checkbox" bind:checked={includeResidential} disabled={scanRunning} />
         </label>
       </div>
       <div class="setting-row">
