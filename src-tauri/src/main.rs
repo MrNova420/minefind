@@ -703,6 +703,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                 let task_ports = ports.clone();
                 let task_tx = db_tx.clone();
                 let task_known = known_set.clone();
+                let task_deep = is_deep;
 
                 handles.push(tokio::spawn(async move {
                     let _held = permit;
@@ -732,6 +733,8 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                             }
                         } else if let Some(pr) = px {
                             scanner::ping::ping_server_via_proxy(&a_str, port, Some(pr)).await
+                        } else if task_deep {
+                            scanner::ping::ping_server_deep(&a_str, port).await
                         } else {
                             scanner::ping::ping_server(&a_str, port).await
                         };
@@ -819,6 +822,7 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                 let task_ports = ports.clone();
                 let task_tx = db_tx.clone();
                 let task_known = known_set.clone();
+                let task_deep = is_deep;
 
                 handles.push(tokio::spawn(async move {
                     let _held = permit;
@@ -850,6 +854,8 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                             }
                         } else if let Some(pr) = px {
                             scanner::ping::ping_server_via_proxy(&a_str, port, Some(pr)).await
+                        } else if task_deep {
+                            scanner::ping::ping_server_deep(&a_str, port).await
                         } else {
                             scanner::ping::ping_server(&a_str, port).await
                         };

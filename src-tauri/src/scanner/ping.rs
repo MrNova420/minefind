@@ -3,7 +3,8 @@ use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
 use crate::scanner::{ServerInfo, PlayerSample, ServerCategory};
 
-const PING_TIMEOUT: Duration = Duration::from_secs(2);
+const PING_TIMEOUT_FAST: Duration = Duration::from_secs(2);
+const PING_TIMEOUT_DEEP: Duration = Duration::from_secs(3);
 
 // Protocol versions to try, ordered from newest to oldest
 const PROTOCOL_VERSIONS: &[(i32, &str)] = &[
@@ -76,11 +77,23 @@ fn build_ping_request() -> Vec<u8> {
 }
 
 pub async fn ping_server(ip: &str, port: u16) -> Result<ServerInfo, String> {
-    ping_server_via_proxy(ip, port, None).await
+    ping_server_with_timeout(ip, port, PING_TIMEOUT_FAST).await
+}
+
+pub async fn ping_server_deep(ip: &str, port: u16) -> Result<ServerInfo, String> {
+    ping_server_with_timeout(ip, port, PING_TIMEOUT_DEEP).await
 }
 
 pub async fn ping_server_via_proxy(ip: &str, port: u16, proxy: Option<&str>) -> Result<ServerInfo, String> {
-    let result = ping_server_via_proxy_inner(ip, port, proxy).await;
+    ping_server_via_proxy_with_timeout(ip, port, proxy, PING_TIMEOUT_FAST).await
+}
+
+async fn ping_server_with_timeout(ip: &str, port: u16, timeout_dur: Duration) -> Result<ServerInfo, String> {
+    ping_server_via_proxy_with_timeout(ip, port, None, timeout_dur).await
+}
+
+pub async fn ping_server_via_proxy_with_timeout(ip: &str, port: u16, proxy: Option<&str>, timeout_dur: Duration) -> Result<ServerInfo, String> {
+    let result = ping_server_via_proxy_inner(ip, port, proxy, timeout_dur).await;
     match &result {
         Ok(info) => log::info!("PING OK {}:{} v={}", ip, port, info.version),
         Err(e) => log::warn!("PING FAIL {}:{} — {}", ip, port, e),
@@ -88,17 +101,17 @@ pub async fn ping_server_via_proxy(ip: &str, port: u16, proxy: Option<&str>) -> 
     result
 }
 
-async fn ping_server_via_proxy_inner(ip: &str, port: u16, proxy: Option<&str>) -> Result<ServerInfo, String> {
+async fn ping_server_via_proxy_inner(ip: &str, port: u16, proxy: Option<&str>, pto: Duration) -> Result<ServerInfo, String> {
     let start = std::time::Instant::now();
 
     let stream = if let Some(proxy_addr) = proxy {
-        match timeout(PING_TIMEOUT, crate::proxy::connect_through_socks5(proxy_addr, ip, port)).await {
+        match timeout(pto, crate::proxy::connect_through_socks5(proxy_addr, ip, port)).await {
             Ok(Ok(s)) => s,
             Ok(Err(e)) => return Err(format!("proxy connection failed to {}:{}: {}", ip, port, e)),
             Err(_) => return Err(format!("proxy timeout to {}:{}", ip, port)),
         }
     } else {
-        timeout(PING_TIMEOUT, TcpStream::connect((ip, port)))
+        timeout(pto, TcpStream::connect((ip, port)))
             .await
             .map_err(|_| format!("timeout connecting to {}:{}", ip, port))?
             .map_err(|e| format!("connection failed to {}:{}: {}", ip, port, e))?
@@ -115,7 +128,7 @@ async fn ping_server_via_proxy_inner(ip: &str, port: u16, proxy: Option<&str>) -
         send_buf.extend_from_slice(&ping_packet);
         send_buf.extend_from_slice(&build_status_request());
 
-        if timeout(PING_TIMEOUT, writer.write_all(&send_buf)).await.is_err() {
+        if timeout(pto, writer.write_all(&send_buf)).await.is_err() {
             last_err = format!("write error with proto {}", proto);
             continue;
         }
@@ -125,7 +138,7 @@ async fn ping_server_via_proxy_inner(ip: &str, port: u16, proxy: Option<&str>) -
         let mut read_failed = false;
         loop {
             let mut byte = [0u8; 1];
-            match timeout(PING_TIMEOUT, reader.read_exact(&mut byte)).await {
+            match timeout(pto, reader.read_exact(&mut byte)).await {
                 Ok(Ok(_)) => {}
                 _ => { read_failed = true; break; }
             }
@@ -150,7 +163,7 @@ async fn ping_server_via_proxy_inner(ip: &str, port: u16, proxy: Option<&str>) -
         }
 
         let mut packet_data = vec![0u8; packet_len as usize];
-        if timeout(PING_TIMEOUT, reader.read_exact(&mut packet_data)).await.is_err() {
+        if timeout(pto, reader.read_exact(&mut packet_data)).await.is_err() {
             last_err = format!("timeout reading packet data with proto {}", proto);
             continue;
         }
@@ -163,9 +176,9 @@ async fn ping_server_via_proxy_inner(ip: &str, port: u16, proxy: Option<&str>) -
             Ok(mut info) => {
                 // True ping measurement: send ping (0x01) after status
                 let ping_start = std::time::Instant::now();
-                if timeout(PING_TIMEOUT, writer.write_all(&build_ping_request())).await.is_ok() {
+                if timeout(pto, writer.write_all(&build_ping_request())).await.is_ok() {
                     let mut pong_buf = [0u8; 4];
-                    match timeout(PING_TIMEOUT, reader.read_exact(&mut pong_buf)).await {
+                    match timeout(pto, reader.read_exact(&mut pong_buf)).await {
                         Ok(Ok(_)) => {
                             info.ping_ms = ping_start.elapsed().as_millis() as i64;
                         }
