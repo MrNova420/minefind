@@ -88,9 +88,6 @@
     <button class="dedup-btn" onclick={async () => { const r = await fetch('/api/servers/dedup', {method:'POST'}); dedupResult = await r.json(); }}>
       Check Dupes
     </button>
-    <button class="export-btn" onclick={async () => { const r = await fetch('/api/serverlist/seed', {method:'POST'}); const d = await r.json(); alert(d?.ok ? `Seeded ${d.seeded} IPs, ${d.added} new` : 'Seed failed'); }}>
-      Seed IPs
-    </button>
     <input type="text" class="srv-input" placeholder="mc.example.com" id="srvDomain" />
     <button class="srv-btn" onclick={async () => {
       const domain = document.getElementById('srvDomain').value.trim();

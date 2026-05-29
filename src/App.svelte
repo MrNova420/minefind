@@ -4,6 +4,7 @@
   import MapView from "./lib/Map.svelte";
   import Kitty from "./lib/Kitty.svelte";
   import Cycles from "./lib/Cycles.svelte";
+  import Sources from "./lib/Sources.svelte";
 
   let currentView = $state("dashboard");
   let stats = $state({});
@@ -27,6 +28,7 @@
   let dbPushStatus = $state({ running: false, status: "" });
   let wlReverify = $state({ running: false, total: 0, done: 0 });
   let cycleData = $state({ summary: {}, history: [], checkpoint: null });
+  let sourceStats = $state({ total: 0 });
 
   let lifetimeScanned = $derived(
     progress.lifetime_scanned || cycleStats.total_targets_scanned || 0
@@ -365,6 +367,13 @@
       >
         Cycles
       </button>
+      <button
+        class="nav-btn"
+        class:active={currentView === "sources"}
+        onclick={() => { currentView = "sources"; api("/serverlist/stats").then(s => { if (s) sourceStats = s; }); }}
+      >
+        Sources
+      </button>
     </nav>
     <div class="actions">
       <span class="proxy-badge" class:active={proxyAvailable} title={proxyAvailable ? "Proxy available" : "No proxy"}>
@@ -559,6 +568,8 @@
       <Kitty servers={kittyServers} stats={kittyStats} verifyProgress={kittyVerifyProgress} onSync={kittySync} onVerify={kittyVerify} />
     {:else if currentView === "cycles"}
       <Cycles {cycleData} {progress} onStartCycle={(type) => startCycle(type)} />
+    {:else if currentView === "sources"}
+      <Sources {sourceStats} onRefresh={() => { api("/serverlist/stats").then(s => { if (s) sourceStats = s; }); }} />
     {/if}
   </main>
 </div>

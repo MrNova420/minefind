@@ -234,6 +234,8 @@ async fn main() {
         .route("/api/kitty/stats", get(kitty::api_kitty_stats))
         .route("/api/kitty/status", get(kitty::api_kitty_status))
         .route("/api/serverlist/seed", post(api_serverlist_seed))
+        .route("/api/serverlist/scrape", post(api_serverlist_scrape))
+        .route("/api/serverlist/list", get(api_serverlist_list))
         .route("/api/serverlist/stats", get(api_serverlist_stats))
         .route("/api/srv/{domain}", get(api_srv_lookup))
         .route("/api/ping/{ip}", get(api_ping_ip))
@@ -398,6 +400,45 @@ async fn api_serverlist_seed(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json:
             }
         }
         Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn api_serverlist_scrape(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
+    let urls = vec![
+        "https://api.mcsrvstat.us/bedrock/2/play.nethergames.org",
+    ];
+    let mut total_added: i64 = 0;
+    let mut results = Vec::new();
+
+    for url in &urls {
+        match scanner::serverlists::fetch_serverlist(url).await {
+            Ok(ips) => {
+                let guard = ctx.serverlist_db.lock().unwrap();
+                if let Some(ref sdb) = *guard {
+                    if let Ok((added, _)) = sdb.merge_ips(&ips, url) {
+                        total_added += added;
+                        results.push(serde_json::json!({"source": url, "found": ips.len(), "added": added}));
+                    }
+                }
+            }
+            Err(e) => {
+                results.push(serde_json::json!({"source": url, "error": e}));
+            }
+        }
+    }
+
+    let total = ctx.serverlist_db.lock().unwrap().as_ref().map(|s| s.count().unwrap_or(0)).unwrap_or(0);
+    Json(serde_json::json!({"ok": true, "results": results, "total_added": total_added, "db_total": total}))
+}
+
+async fn api_serverlist_list(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
+    let guard = ctx.serverlist_db.lock().unwrap();
+    match guard.as_ref() {
+        Some(sdb) => match sdb.get_all() {
+            Ok(list) => Json(serde_json::json!(list.iter().map(|(ip, port)| serde_json::json!({"ip": ip, "port": port})).collect::<Vec<_>>())),
+            Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+        },
+        None => Json(serde_json::json!([])),
     }
 }
 
