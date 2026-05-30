@@ -115,5 +115,4 @@
   .src-name { color: var(--text-dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .src-stat { color: var(--text); min-width: 40px; }
   .src-added { color: var(--green); min-width: 30px; font-weight: 600; }
-  .result-row:has(.src-added:contains("err")) .src-added { color: var(--red); }
 </style>
