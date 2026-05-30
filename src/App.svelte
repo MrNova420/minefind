@@ -27,6 +27,7 @@
   let kittyVerifyProgress = $state({ verify_total: 0, verify_done: 0, verify_found: 0 });
   let dbPushStatus = $state({ running: false, status: "" });
   let wlReverify = $state({ running: false, total: 0, done: 0 });
+  let serverRefresh = $state({ running: false, total: 0, done: 0 });
   let cycleData = $state({ summary: {}, history: [], checkpoint: null });
   let sourceStats = $state({ total: 0 });
 
@@ -108,6 +109,26 @@
       const st = await api("/servers/reverify-wl/status");
       if (st) {
         wlReverify = { running: st.running || false, total: st.total || 0, done: st.done || 0 };
+        if (!st.running) break;
+      }
+    }
+    await refreshAll();
+  }
+
+  async function refreshAllServers() {
+    const res = await api("/servers/refresh", { method: "POST" });
+    if (res?.ok) {
+      serverRefresh = { running: true, total: 0, done: 0 };
+      pollServerRefresh();
+    }
+  }
+
+  async function pollServerRefresh() {
+    while (serverRefresh.running) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const st = await api("/servers/refresh/status");
+      if (st) {
+        serverRefresh = { running: st.running || false, total: st.total || 0, done: st.done || 0 };
         if (!st.running) break;
       }
     }
@@ -562,7 +583,7 @@
     {:else if currentView === "dashboard"}
       <Dashboard {stats} {servers} {cycleStats} {progress} {lifetimeScanned} {scanRate} {etaStr} {dbPushStatus} onRefresh={refreshAll} onPushDb={pushDb} />
     {:else if currentView === "servers"}
-      <ServerList {servers} {wlReverify} onReverifyWL={reverifyWL} />
+      <ServerList {servers} {wlReverify} {serverRefresh} onReverifyWL={reverifyWL} onRefreshAll={refreshAllServers} />
     {:else if currentView === "map"}
       <MapView {servers} />
     {:else if currentView === "kitty"}

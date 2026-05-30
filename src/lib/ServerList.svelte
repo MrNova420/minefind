@@ -1,5 +1,5 @@
 <script>
-  let { servers = [], wlReverify = { running: false, total: 0, done: 0 }, onReverifyWL = () => {} } = $props();
+  let { servers = [], wlReverify = { running: false, total: 0, done: 0 }, serverRefresh = { running: false, total: 0, done: 0 }, onReverifyWL = () => {}, onRefreshAll = () => {} } = $props();
 
   let dedupResult = $state(null);
   let portFilter = $state("all");
@@ -85,6 +85,9 @@
     <button class="reverify-btn" onclick={onReverifyWL} disabled={wlReverify.running}>
       {wlReverify.running ? `Reverifying ${wlReverify.done}/${wlReverify.total}...` : "Re-verify WL"}
     </button>
+    <button class="refresh-btn" onclick={onRefreshAll} disabled={serverRefresh.running}>
+      {serverRefresh.running ? `Refreshing ${serverRefresh.done}/${serverRefresh.total}...` : "Refresh All"}
+    </button>
     <button class="dedup-btn" onclick={async () => { const r = await fetch('/api/servers/dedup', {method:'POST'}); dedupResult = await r.json(); }}>
       Check Dupes
     </button>
@@ -115,6 +118,13 @@
     <div class="reverify-bar">
       <div class="reverify-fill" style="width: {wlPct}%"></div>
       <span class="reverify-text">{wlReverify.done}/{wlReverify.total} servers checked · {wlPct}%</span>
+    </div>
+  {/if}
+
+  {#if serverRefresh.running}
+    <div class="reverify-bar">
+      <div class="reverify-fill" style="width: {serverRefresh.total > 0 ? Math.round((serverRefresh.done / serverRefresh.total) * 100) : 0}%"></div>
+      <span class="reverify-text">{serverRefresh.done}/{serverRefresh.total} servers refreshed</span>
     </div>
   {/if}
 
@@ -207,6 +217,12 @@
     white-space: nowrap;
   }
   .reverify-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+  .refresh-btn {
+    padding: 6px 14px; font-size: 12px; background: var(--accent); color: white;
+    border: 1px solid var(--accent); border-radius: 4px; cursor: pointer; white-space: nowrap;
+  }
+  .refresh-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
   .dedup-btn {
     padding: 6px 14px; font-size: 12px; background: var(--bg3); color: var(--text);

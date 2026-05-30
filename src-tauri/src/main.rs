@@ -43,6 +43,9 @@ struct AppCtx {
     wl_reverify_running: AtomicBool,
     wl_reverify_total: AtomicU64,
     wl_reverify_done: AtomicU64,
+    server_refresh_running: AtomicBool,
+    server_refresh_total: AtomicU64,
+    server_refresh_done: AtomicU64,
     rescan_all: AtomicBool,
     start_fresh: AtomicBool,
     cycle_enabled_ipv4_fast: AtomicBool,
@@ -205,6 +208,9 @@ async fn main() {
         wl_reverify_running: AtomicBool::new(false),
         wl_reverify_total: AtomicU64::new(0),
         wl_reverify_done: AtomicU64::new(0),
+        server_refresh_running: AtomicBool::new(false),
+        server_refresh_total: AtomicU64::new(0),
+        server_refresh_done: AtomicU64::new(0),
         rescan_all: AtomicBool::new(true),
         start_fresh: AtomicBool::new(false),
         cycle_enabled_ipv4_fast: AtomicBool::new(true),
@@ -303,6 +309,8 @@ async fn main() {
         .route("/api/db/push/status", get(api_db_push_status))
         .route("/api/servers/reverify-wl", post(api_reverify_wl))
         .route("/api/servers/reverify-wl/status", get(api_reverify_wl_status))
+        .route("/api/servers/refresh", post(api_server_refresh))
+        .route("/api/servers/refresh/status", get(api_server_refresh_status))
         .route("/api/servers/dedup", post(api_dedup))
         .route("/api/settings/rescan", post(api_set_rescan))
         .route("/api/settings/cycle", post(api_set_cycle_toggle))
@@ -424,6 +432,72 @@ async fn api_reverify_wl_status(State(ctx): State<Arc<AppCtx>>) -> Json<serde_js
         "running": ctx.wl_reverify_running.load(Ordering::SeqCst),
         "total": ctx.wl_reverify_total.load(Ordering::SeqCst),
         "done": ctx.wl_reverify_done.load(Ordering::SeqCst),
+    }))
+}
+
+async fn api_server_refresh(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
+    if ctx.server_refresh_running.load(Ordering::SeqCst) {
+        return Json(serde_json::json!({"error": "refresh already running"}));
+    }
+    ctx.server_refresh_running.store(true, Ordering::SeqCst);
+    ctx.server_refresh_total.store(0, Ordering::SeqCst);
+    ctx.server_refresh_done.store(0, Ordering::SeqCst);
+
+    let ctx2 = ctx.clone();
+    tokio::spawn(async move {
+        let servers = get_db(&ctx2).ok()
+            .and_then(|g| g.as_ref().unwrap().get_all_servers().ok())
+            .unwrap_or_default();
+
+        let total = servers.len() as u64;
+        if total == 0 {
+            ctx2.server_refresh_running.store(false, Ordering::SeqCst);
+            return;
+        }
+
+        ctx2.server_refresh_total.store(total, Ordering::SeqCst);
+        log::info!("Server refresh: pinging {} servers", total);
+
+        let sem = Arc::new(tokio::sync::Semaphore::new(200));
+
+        for server in &servers {
+            let permit = sem.clone().acquire_owned().await.unwrap();
+            let info = server.clone();
+            let ctx3 = ctx2.clone();
+
+            tokio::spawn(async move {
+                let _held = permit;
+                let ping = scanner::ping::ping_server_deep_with_sem(
+                    &info.ip, info.port, None
+                ).await;
+                if let Ok(mut fresh) = ping {
+                    fresh.whitelisted = info.whitelisted;
+                    fresh.category = categorize_from_info(&fresh);
+                    fresh.tags = crate::scanner::ping::generate_tags_info(&fresh);
+                    if let Ok(db_guard) = get_db(&ctx3) {
+                        let _ = db_guard.as_ref().unwrap().upsert_server(&fresh);
+                    }
+                }
+                ctx3.server_refresh_done.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        while ctx2.server_refresh_done.load(Ordering::SeqCst) < ctx2.server_refresh_total.load(Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+
+        ctx2.server_refresh_running.store(false, Ordering::SeqCst);
+        log::info!("Server refresh complete: {} servers pinged", total);
+    });
+
+    Json(serde_json::json!({"ok": true}))
+}
+
+async fn api_server_refresh_status(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "running": ctx.server_refresh_running.load(Ordering::SeqCst),
+        "total": ctx.server_refresh_total.load(Ordering::SeqCst),
+        "done": ctx.server_refresh_done.load(Ordering::SeqCst),
     }))
 }
 
