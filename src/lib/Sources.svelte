@@ -27,29 +27,43 @@
 
   <div class="grid">
     <div class="card accent">
-      <div class="card-label">Total IPs Scraped</div>
+      <div class="card-label">IPs Scraped</div>
       <div class="card-value">{sourceStats.total ?? 0}</div>
     </div>
     <div class="card">
       <div class="card-label">Sources</div>
-      <div class="card-value dim">Public APIs</div>
-      <div class="card-sub">Minecraft server directories</div>
+      <div class="card-value dim">{scrapeResult?.results?.length ?? 18}</div>
+      <div class="card-sub">18 server lists</div>
     </div>
     <div class="card push-card">
-      <div class="card-label">Refresh Lists</div>
+      <div class="card-label">Scrape All Sources</div>
       <button class="scrape-btn" onclick={doScrape} disabled={scraping}>
-        {scraping ? "Scraping..." : "Scrape Server Lists"}
+        {scraping ? "Scraping..." : "Scrape All Lists"}
       </button>
       {#if scrapeResult}
         <div class="scrape-result">
           {#if scrapeResult.ok}
-            Added {scrapeResult.total_added} new IPs ({scrapeResult.db_total} total)
+            +{scrapeResult.total_added} new · {scrapeResult.db_total} total
           {:else}
-            Failed to scrape
+            Failed
           {/if}
         </div>
       {/if}
     </div>
+    {#if scrapeResult?.results}
+      <div class="card" style="grid-column: 1 / -1;">
+        <div class="card-label">Latest Scrape Results</div>
+        <div class="results-grid">
+          {#each scrapeResult.results as r}
+            <div class="result-row">
+              <span class="src-name">{r.source}</span>
+              <span class="src-stat">{r.found ?? 0} found</span>
+              <span class="src-added">{r.error ? 'err' : ('+' + (r.added ?? 0))}</span>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
   </div>
 
   <div class="table-wrap">
@@ -95,4 +109,11 @@
   .mono { font-family: "SF Mono", "Fira Code", monospace; font-size: 11px; }
   .small { font-size: 11px; color: var(--text-dim); }
   .empty { padding: 32px; text-align: center; color: var(--text-dim); font-size: 13px; }
+
+  .results-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 4px 12px; margin-top: 8px; }
+  .result-row { display: flex; gap: 6px; align-items: center; font-size: 11px; }
+  .src-name { color: var(--text-dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .src-stat { color: var(--text); min-width: 40px; }
+  .src-added { color: var(--green); min-width: 30px; font-weight: 600; }
+  .result-row:has(.src-added:contains("err")) .src-added { color: var(--red); }
 </style>

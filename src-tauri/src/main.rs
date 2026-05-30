@@ -510,42 +510,72 @@ async fn api_dedup(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
 }
 async fn api_serverlist_scrape(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
     let urls = vec![
-        "https://minecraft-server-list.com/",
-        "https://minecraft-mp.com/servers/",
-        "https://minecraft.buzz/",
-        "https://topg.org/minecraft/",
-        "https://minecraftservers.org/",
-        "https://minecraft-server.net/",
+        ("https://minecraft-server-list.com/", "minecraft-server-list.com"),
+        ("https://minecraft-mp.com/servers/", "minecraft-mp.com"),
+        ("https://minecraft.buzz/", "minecraft.buzz"),
+        ("https://topg.org/minecraft/", "topg.org"),
+        ("https://minecraftservers.org/", "minecraftservers.org"),
+        ("https://minecraft-server.net/", "minecraft-server.net"),
+        ("https://www.minecrafttracker.com/servers/", "minecrafttracker.com"),
+        ("https://www.planetminecraft.com/forums/servers/", "planetminecraft.com"),
+        ("https://mclist.io/", "mclist.io"),
+        ("https://minecraftlist.org/", "minecraftlist.org"),
+        ("https://mcslists.com/", "mcslists.com"),
+        ("https://minecraft-server.eu/", "minecraft-server.eu"),
+        ("https://minecraft.best/", "minecraft.best"),
+        ("https://minecraft.top/", "minecraft.top"),
+        ("https://mclive.org/", "mclive.org"),
+        ("https://minecraftservers.biz/", "minecraftservers.biz"),
+        ("https://serverlist101.com/", "serverlist101.com"),
+        ("https://topminecraftservers.org/", "topminecraftservers.org"),
     ];
-    let mut total_added: i64 = 0;
-    let mut results = Vec::new();
+    let total_added = Arc::new(std::sync::Mutex::new(0i64));
+    let results = Arc::new(std::sync::Mutex::new(Vec::new()));
 
-    for url in &urls {
-        match scanner::serverlists::fetch_serverlist(url).await {
-            Ok(ips) => {
-                let guard = ctx.serverlist_db.lock().unwrap();
-                if let Some(ref sdb) = *guard {
-                    if let Ok((added, _)) = sdb.merge_ips(&ips, url) {
-                        total_added += added;
-                        results.push(serde_json::json!({"source": url, "found": ips.len(), "added": added}));
+    let mut handles = Vec::new();
+    for (url, source) in urls {
+        let url = url.to_string();
+        let source = source.to_string();
+        let ctx2 = ctx.clone();
+        let results = results.clone();
+        let total_added = total_added.clone();
+        handles.push(tokio::spawn(async move {
+            let r = match scanner::serverlists::fetch_serverlist(&url).await {
+                Ok(ips) => {
+                    let guard = ctx2.serverlist_db.lock().unwrap();
+                    let mut entry = serde_json::json!({"source": source, "found": ips.len(), "added": 0, "error": null});
+                    if let Some(ref sdb) = *guard {
+                        match sdb.merge_ips(&ips, &source) {
+                            Ok((added, _)) => {
+                                entry["added"] = serde_json::json!(added);
+                                *total_added.lock().unwrap() += added;
+                            }
+                            Err(e) => { entry["error"] = serde_json::json!(format!("db: {}", e)); }
+                        }
                     }
+                    entry
                 }
-            }
-            Err(e) => {
-                results.push(serde_json::json!({"source": url, "error": e}));
-            }
-        }
+                Err(e) => serde_json::json!({"source": source, "found": 0, "added": 0, "error": e}),
+            };
+            results.lock().unwrap().push(r);
+        }));
     }
+    for h in handles { let _ = h.await; }
 
-    let total = ctx.serverlist_db.lock().unwrap().as_ref().map(|s| s.count().unwrap_or(0)).unwrap_or(0);
-    Json(serde_json::json!({"ok": true, "results": results, "total_added": total_added, "db_total": total}))
+    let total_a = *total_added.lock().unwrap();
+    let results_out: Vec<_> = results.lock().unwrap().clone();
+    let db_total = ctx.serverlist_db.lock().unwrap().as_ref().map(|s| s.count().unwrap_or(0)).unwrap_or(0);
+    Json(serde_json::json!({"ok": true, "results": results_out, "total_added": total_a, "db_total": db_total}))
 }
 
 async fn api_serverlist_list(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
     let guard = ctx.serverlist_db.lock().unwrap();
     match guard.as_ref() {
-        Some(sdb) => match sdb.get_all() {
-            Ok(list) => Json(serde_json::json!(list.iter().map(|(ip, port)| serde_json::json!({"ip": ip, "port": port})).collect::<Vec<_>>())),
+        Some(sdb) => match sdb.get_all_with_source() {
+            Ok(list) => Json(serde_json::json!(list.into_iter().map(|(ip, port, source)| {
+                let source_short = source.rsplit('/').next().unwrap_or(&source).trim_end_matches('/');
+                serde_json::json!({"ip": ip, "port": port, "source": source_short})
+            }).collect::<Vec<_>>())),
             Err(e) => Json(serde_json::json!({"error": e.to_string()})),
         },
         None => Json(serde_json::json!([])),

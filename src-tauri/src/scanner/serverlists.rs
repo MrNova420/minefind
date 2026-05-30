@@ -68,6 +68,16 @@ impl ServerListDB {
         conn.query_row("SELECT COUNT(*) FROM serverlist_ips", [], |r| r.get(0))
     }
 
+    pub fn get_all_with_source(&self) -> SqlResult<Vec<(String, u16, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT ip, port, source FROM serverlist_ips ORDER BY last_seen DESC LIMIT 5000")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u16, row.get::<_, String>(2).unwrap_or_default()))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    #[allow(dead_code)]
     pub fn get_all(&self) -> SqlResult<Vec<(String, u16)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT ip, port FROM serverlist_ips ORDER BY last_seen DESC")?;
@@ -79,11 +89,18 @@ impl ServerListDB {
 }
 
 /// Fetch a server list website and extract ALL ip:port pairs from the HTML.
-/// Uses regex to find every valid IPv4:port combination in the page source.
 pub async fn fetch_serverlist(url: &str) -> Result<Vec<(String, u16)>, String> {
+    let agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
+        "Mozilla/5.0 (X11; Linux x86_64; rv:126.0) Gecko/20100101 Firefox/126.0",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0",
+    ];
+    let ua = agents[url.len() % agents.len()];
+
     let output = tokio::process::Command::new("curl")
-        .args(["-s", "-L", "--max-time", "30",
-              "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        .args(["-s", "-L", "--max-time", "30", "--compressed",
+              "-H", &format!("User-Agent: {}", ua),
               "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
               "-H", "Accept-Language: en-US,en;q=0.5"])
         .arg(url)
@@ -102,13 +119,16 @@ pub async fn fetch_serverlist(url: &str) -> Result<Vec<(String, u16)>, String> {
 /// Extract ALL IPv4:port pairs from raw HTML using regex.
 /// No filtering — every valid IP:port found goes in.
 fn extract_ips_from_html(html: &str) -> Result<Vec<(String, u16)>, String> {
-    let re = Regex::new(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d{1,5})\b")
+    let re_ip_port = Regex::new(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})[:](\d{1,5})\b")
+        .map_err(|e| format!("regex: {}", e))?;
+    let re_ip_alone = Regex::new(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b")
         .map_err(|e| format!("regex: {}", e))?;
 
     let mut seen = HashSet::new();
     let mut results = Vec::new();
 
-    for cap in re.captures_iter(html) {
+    // First pass: ip:port pairs
+    for cap in re_ip_port.captures_iter(html) {
         let ip = cap.get(1).unwrap().as_str();
         let port_str = cap.get(2).unwrap().as_str();
         if let Ok(port) = port_str.parse::<u16>() {
@@ -118,6 +138,24 @@ fn extract_ips_from_html(html: &str) -> Result<Vec<(String, u16)>, String> {
                     seen.insert(key);
                     results.push((ip.to_string(), port));
                 }
+            }
+        }
+    }
+
+    // Second pass: bare IPs (use port 25565)
+    let reserved: HashSet<&str> = ["0.0.0.0", "127.0.0.1", "255.255.255.255"].iter().copied().collect();
+    for cap in re_ip_alone.captures_iter(html) {
+        let ip = cap.get(1).unwrap().as_str();
+        if reserved.contains(ip) { continue; }
+        let parts: Vec<&str> = ip.split('.').collect();
+        let ok = parts.iter().all(|p| {
+            if let Ok(n) = p.parse::<u32>() { n <= 255 } else { false }
+        });
+        if ok {
+            let key = format!("{}:25565", ip);
+            if !seen.contains(&key) {
+                seen.insert(key);
+                results.push((ip.to_string(), 25565));
             }
         }
     }
