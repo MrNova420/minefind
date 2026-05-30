@@ -277,6 +277,7 @@ impl Database {
         Ok(result)
     }
 
+    #[allow(dead_code)]
     pub fn get_skipped_prefixes(&self, empty_after: i64) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(

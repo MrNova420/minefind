@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 
-const BEDROCK_TIMEOUT: Duration = Duration::from_secs(2);
+const BEDROCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 // RakNet unconnected ping magic bytes
 const MAGIC: [u8; 16] = [

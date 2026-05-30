@@ -18,3 +18,4 @@ dirs-next = "2.0"
 tokio-socks = "0.5"
 hickory-resolver = { version = "0.25", features = ["tokio"] }
 regex = "1"
+libc = "0.2"

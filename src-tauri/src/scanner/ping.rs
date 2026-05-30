@@ -14,8 +14,8 @@ fn should_log_ping_fail() -> bool {
     LAST_LOG.swap(now, Ordering::Relaxed) < now
 }
 
-const PING_TIMEOUT_FAST: Duration = Duration::from_secs(2);
-const PING_TIMEOUT_DEEP: Duration = Duration::from_secs(3);
+const PING_TIMEOUT_FAST: Duration = Duration::from_secs(4);
+const PING_TIMEOUT_DEEP: Duration = Duration::from_secs(6);
 
 /// Check additional ports on the same IP when a server is found (progressive discovery)
 pub async fn discover_nearby_ports(ip: &str, found_port: u16, deep: bool) -> Vec<ServerInfo> {
@@ -46,9 +46,18 @@ const PROTOCOL_VERSIONS: &[(i32, &str)] = &[
     (767, "1.21"),
     (766, "1.20.6"),
     (765, "1.20.4"),
+    (764, "1.20.2"),
     (763, "1.20.1"),
+    (762, "1.19.4"),
+    (761, "1.19.3"),
+    (760, "1.19.2"),
+    (759, "1.19"),
+    (758, "1.18.2"),
     (757, "1.18"),
+    (756, "1.17.1"),
+    (755, "1.17"),
     (754, "1.16.5"),
+    (736, "1.16.3"),
     (735, "1.16"),
     (578, "1.15.2"),
     (498, "1.14.4"),
