@@ -50,6 +50,7 @@ struct AppCtx {
     cycle_enabled_ipv4_deep: AtomicBool,
     cycle_enabled_ipv4_hot_deep: AtomicBool,
     cycle_enabled_ipv6_deep: AtomicBool,
+    cpu_limit_pct: AtomicU64,
 }
 
 #[derive(Clone, PartialEq)]
@@ -207,6 +208,7 @@ async fn main() {
         cycle_enabled_ipv4_deep: AtomicBool::new(true),
         cycle_enabled_ipv4_hot_deep: AtomicBool::new(true),
         cycle_enabled_ipv6_deep: AtomicBool::new(true),
+        cpu_limit_pct: AtomicU64::new(45),
     });
 
     log::info!("Direct connections only. Enable proxy (Tor) in Settings for privacy.");
@@ -304,6 +306,7 @@ async fn main() {
         .route("/api/settings", get(api_get_settings))
         .route("/api/settings/force-proxy", post(api_set_force_proxy))
         .route("/api/settings/probe-wl", post(api_set_probe_wl))
+        .route("/api/settings/cpu-limit", post(api_set_cpu_limit))
         .layer(CorsLayer::permissive())
         .with_state(ctx);
 
@@ -529,6 +532,7 @@ async fn api_get_settings(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Va
         "cycle_ipv4_deep": ctx.cycle_enabled_ipv4_deep.load(Ordering::SeqCst),
         "cycle_ipv4_hot_deep": ctx.cycle_enabled_ipv4_hot_deep.load(Ordering::SeqCst),
         "cycle_ipv6_deep": ctx.cycle_enabled_ipv6_deep.load(Ordering::SeqCst),
+        "cpu_limit_pct": ctx.cpu_limit_pct.load(Ordering::SeqCst),
         "has_ipv6": has_ipv6,
     }))
 }
@@ -566,6 +570,15 @@ async fn api_set_probe_wl(
     let on = params.get("on").map(|v| v == "1").unwrap_or(true);
     ctx.scan_probe_wl.store(on, Ordering::SeqCst);
     Json(serde_json::json!({"probe_whitelist": on}))
+}
+
+async fn api_set_cpu_limit(
+    State(ctx): State<Arc<AppCtx>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let pct = params.get("pct").and_then(|v| v.parse::<u64>().ok()).unwrap_or(45).clamp(10, 100);
+    ctx.cpu_limit_pct.store(pct, Ordering::SeqCst);
+    Json(serde_json::json!({"cpu_limit_pct": pct}))
 }
 
 async fn api_stats(State(ctx): State<Arc<AppCtx>>) -> Json<serde_json::Value> {
@@ -860,6 +873,9 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
         let mut last_backup_time = Instant::now();
         let mut found_at_last_backup: u64 = found_count.load(Ordering::SeqCst);
         let mut last_cache_invalidate = Instant::now();
+        let mut last_cpu_check = Instant::now();
+        let cpu_throttle_us = AtomicU64::new(0);
+        let mut last_cpu_ticks: u64 = 0;
         const BACKUP_INTERVAL: Duration = Duration::from_secs(300); // 5 min
         const NEW_SERVER_BACKUP_THRESHOLD: u64 = 50;
         const CACHE_INVALIDATE_INTERVAL: Duration = Duration::from_secs(30);
@@ -882,6 +898,8 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                     log::info!("PC health pause complete");
                 }
 
+                let delay_us = cpu_throttle_us.load(Ordering::Relaxed);
+                if delay_us > 0 { tokio::time::sleep(Duration::from_micros(delay_us)).await; }
                 let permit = sem.clone().acquire_owned().await.unwrap();
                 let c = cancel.clone();
                 let a_str = ip_str.clone();
@@ -1072,6 +1090,24 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                         *ctx.stats_cache.lock().unwrap() = None;
                         last_cache_invalidate = Instant::now();
                     }
+                    if last_cpu_check.elapsed() >= Duration::from_secs(5) {
+                        let cur_ticks = read_cpu_ticks();
+                        if last_cpu_ticks > 0 && cur_ticks > last_cpu_ticks {
+                            let delta = (cur_ticks - last_cpu_ticks) as f64;
+                            let pct = delta / 5.0 / ticks_per_second() as f64 * 100.0;
+                            let limit = ctx.cpu_limit_pct.load(Ordering::SeqCst) as f64;
+                            let mut delay = cpu_throttle_us.load(Ordering::SeqCst);
+                            if pct > limit && delay < 50000 {
+                                delay = (delay * 2).max(500).min(50000);
+                                cpu_throttle_us.store(delay, Ordering::SeqCst);
+                            } else if pct < limit * 0.7 && delay > 0 {
+                                delay = delay / 2;
+                                cpu_throttle_us.store(delay, Ordering::SeqCst);
+                            }
+                        }
+                        last_cpu_ticks = cur_ticks;
+                        last_cpu_check = Instant::now();
+                    }
                     tokio::task::yield_now().await;
                 }
                 if scanned_ips.saturating_sub(last_checkpoint_at) >= SAVE_CHECKPOINT_EVERY {
@@ -1130,6 +1166,8 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                     continue;
                 }
 
+                let delay_us = cpu_throttle_us.load(Ordering::Relaxed);
+                if delay_us > 0 { tokio::time::sleep(Duration::from_micros(delay_us)).await; }
                 let permit = sem.clone().acquire_owned().await.unwrap();
                 let c = cancel.clone();
                 let a_str = scanner::ranges::u32_to_ip(ip_u32).to_string();
@@ -1326,6 +1364,26 @@ async fn scan_loop(ctx: Arc<AppCtx>, cancel: Arc<AtomicBool>, running: Arc<Atomi
                     if last_cache_invalidate.elapsed() >= CACHE_INVALIDATE_INTERVAL {
                         *ctx.stats_cache.lock().unwrap() = None;
                         last_cache_invalidate = Instant::now();
+                    }
+                    if last_cpu_check.elapsed() >= Duration::from_secs(5) {
+                        let cur_ticks = read_cpu_ticks();
+                        if last_cpu_ticks > 0 && cur_ticks > last_cpu_ticks {
+                            let delta = (cur_ticks - last_cpu_ticks) as f64;
+                            let pct = delta / 5.0 / ticks_per_second() as f64 * 100.0;
+                            let limit = ctx.cpu_limit_pct.load(Ordering::SeqCst) as f64;
+                            let mut delay = cpu_throttle_us.load(Ordering::SeqCst);
+                            if pct > limit && delay < 50000 {
+                                delay = (delay * 2).max(500).min(50000);
+                                cpu_throttle_us.store(delay, Ordering::SeqCst);
+                                log::info!("CPU {:.0}% > {:.0}% — throttle {}µs", pct, limit, delay);
+                            } else if pct < limit * 0.7 && delay > 0 {
+                                delay = delay / 2;
+                                cpu_throttle_us.store(delay, Ordering::SeqCst);
+                                log::info!("CPU {:.0}% — release, delay {}µs", pct, delay);
+                            }
+                        }
+                        last_cpu_ticks = cur_ticks;
+                        last_cpu_check = Instant::now();
                     }
                     // Periodic backup every 5 min
                     if last_backup_time.elapsed() >= BACKUP_INTERVAL {
@@ -1652,6 +1710,23 @@ fn load_lifetime() -> u64 {
     std::fs::read_to_string(lifetime_counter_path())
         .ok()
         .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+fn ticks_per_second() -> u64 {
+    100 // _SC_CLK_TCK on Linux
+}
+
+fn read_cpu_ticks() -> u64 {
+    std::fs::read_to_string("/proc/self/stat")
+        .ok()
+        .and_then(|s| {
+            let parts: Vec<&str> = s.split_whitespace().collect();
+            if parts.len() < 17 { return None; }
+            let utime: u64 = parts[13].parse().ok()?;
+            let stime: u64 = parts[14].parse().ok()?;
+            Some(utime + stime)
+        })
         .unwrap_or(0)
 }
 

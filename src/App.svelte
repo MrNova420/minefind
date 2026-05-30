@@ -19,6 +19,7 @@
   let concurrency = $state(4000);
   let rescanAll = $state(true);
   let cycleToggles = $state({ ipv4_fast: true, ipv6_targeted: true, ipv4_hot_deep: true, ipv4_deep: true, ipv6_deep: true });
+  let cpuLimitPct = $state(45);
   let hasIpv6 = $state(true);
   let cycleStats = $state({ cycles: 0, total_servers_found: 0, total_targets_scanned: 0 });
   let progress = $state({ scanned_ips: 0, total_ips: 0, found_servers: 0, current_range: "", elapsed_secs: 0, cycle: 0, cycle_type: "", status: "stopped", lifetime_scanned: 0 });
@@ -166,6 +167,11 @@
     await api(`/settings/cycle?cycle=${cycle}&on=${newVal ? "1" : "0"}`, { method: "POST" });
   }
 
+  async function setCpuLimit(pct) {
+    cpuLimitPct = pct;
+    await api(`/settings/cpu-limit?pct=${pct}`, { method: "POST" });
+  }
+
   async function resetScanner() {
     if (!confirm("Reset all scanner memory? Keeps your servers, clears all cycle history and checkpoints.")) return;
     const res = await api("/scan/reset", { method: "POST" });
@@ -276,6 +282,7 @@
         ipv6_deep: stg.cycle_ipv6_deep !== false,
       };
       hasIpv6 = stg.has_ipv6 !== false;
+      cpuLimitPct = stg.cpu_limit_pct ?? 45;
     }
     // Resume live polling if scan is already running
     const status = await api("/scan/status");
@@ -474,6 +481,13 @@
           <span class="setting-desc">Parallel connections: {concurrency} — higher = faster, uses more bandwidth</span>
         </div>
         <input type="range" min="500" max="10000" step="100" bind:value={concurrency} disabled={scanRunning} style="width:120px;accent-color:var(--accent);" />
+      </div>
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Max CPU: {cpuLimitPct}%</span>
+          <span class="setting-desc">Auto-throttles scan if CPU exceeds this limit</span>
+        </div>
+        <input type="range" min="10" max="100" step="5" bind:value={cpuLimitPct} oninput={() => setCpuLimit(cpuLimitPct)} style="width:120px;accent-color:var(--accent);" />
       </div>
       <div class="setting-row">
         <div class="setting-info">
